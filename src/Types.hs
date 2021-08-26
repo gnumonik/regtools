@@ -8,7 +8,8 @@ import GHC.TypeLits
 import Data.Kind 
 import Data.Proxy 
 import System.IO 
-import qualified Data.Vector as V 
+import qualified Data.Vector as V
+import Control.Lens 
 
 class Pretty a where 
   pretty :: a -> String 
@@ -21,6 +22,8 @@ class Pretty a where
 data Bytes :: Nat -> Type  where 
   Bytes :: KnownNat n => BS.ByteString -> Bytes n
 
+instance Pretty Word32 where 
+  pretty = show 
 
 instance KnownNat n => Serialize (Bytes n) where 
   put (Bytes  bs) = put bs 
@@ -139,7 +142,7 @@ data HiveCell = HiveCell {
 instance Pretty HiveCell where 
   pretty hc = "Hive Cell:" 
            <> "\n  Cell Size: " <> show (_cellSize hc)
-           <> "\n  Cell Content: " <> pretty (_cellContent hc)  
+           <> "\n  Cell Content: \n" <> pretty (_cellContent hc)  
 
 
 data CellContent = SK SKRecord 
@@ -156,6 +159,8 @@ instance Pretty CellContent where
     Subkeylist x -> pretty x 
     Valuelist x  -> pretty x 
     RawDataBlocks bs -> show bs 
+
+
 
 data SKRecord = SKRecord {
     _skMagicNumber :: Bytes 2 -- String "sk"
@@ -200,8 +205,11 @@ data NKRecord = NKRecord {
   , _keyNameLength     :: Word32 -- length of key name 
   , _classNameLength   :: Word32 -- length of class name 
   , _keyString         :: BS.ByteString -- Key name. Stored in ASCII. Typically null-terminated.
-  , _children          :: Maybe SubkeyList 
-  , _nkValues          :: Maybe ValueList
+  , _subkeylistStable  :: Maybe SubkeyList
+  , _subkeylistVol     :: Maybe SubkeyList  
+  , _valueList         :: Maybe ValueList
+  , _subkeys           :: V.Vector NKRecord 
+  , _values            :: V.Vector VKRecord
 } deriving Show 
 
 instance Pretty NKRecord where 
@@ -221,7 +229,11 @@ instance Pretty NKRecord where
             <> "\n  Key Name Length: " <> show (_keyNameLength nk)
             <> "\n  Class Name Length: " <> show (_classNameLength nk)
             <> "\n  Key String: " <> show (_keyString nk)
-            <> "\n  Children: " <> pretty (_children nk) 
+            <> "\n  Subkey List (Stable): " <> pretty (_subkeylistStable nk)
+            <> "\n  Subkey List (Volatile): " <> pretty (_subkeylistVol nk)
+            <> "\n  Value List: " <> pretty (_valueList nk)
+            <> "\n  Subkeys: " <> pretty (_subkeys nk)
+            <> "\n  Values:  " <> pretty (_values nk) 
             <> "\n\n"
 
 
@@ -249,7 +261,7 @@ instance Pretty VKRecord where
            <> "\n  Value: " <> pretty (_value vk)
            <> "\n\n"
 
-type ValueList = V.Vector (Bytes 4) -- i think? 
+type ValueList = V.Vector Word32-- i think? 
 
 
 data SubkeyList = SubkeyList {
@@ -264,10 +276,10 @@ instance Pretty SubkeyList where
             <> "\n NumElems: " <> show (_numElems skl)
             <> "\n Subkeylist: " <> show (_subkeyElems skl)
 
-data SubkeyElem = Ri (Bytes 4) -- pointer to another subkey LIST  
-                | Li (Bytes 4) -- pointer to a subkey 
-                | Lf (Bytes 4) (Bytes 4) -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh)
-                | Lh (Bytes 4) (Bytes 4) -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh) deriving Show 
+data SubkeyElem = Ri Word32-- pointer to another subkey LIST  
+                | Li Word32 -- pointer to a subkey 
+                | Lf Word32 Word32 -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh)
+                | Lh Word32 Word32 -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh) deriving Show 
   deriving Show 
 
 
@@ -289,3 +301,28 @@ data Value = REG_NONE BS.ByteString -- 0x0
 instance Pretty Value where 
   pretty = show 
 
+makePrisms ''CellContent
+
+class IsCC a where 
+  cc :: Prism' CellContent a 
+
+instance IsCC SKRecord where 
+  cc = _SK 
+
+instance IsCC NKRecord where 
+  cc = _NK 
+
+instance IsCC VKRecord where 
+  cc = _VK 
+
+instance IsCC SubkeyList where 
+  cc = _Subkeylist 
+
+instance IsCC ValueList where 
+  cc = _Valuelist 
+
+instance IsCC BS.ByteString where 
+  cc = _RawDataBlocks  
+
+instance IsCC CellContent where 
+  cc = id 
