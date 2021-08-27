@@ -11,6 +11,7 @@ import System.IO
 import qualified Data.Vector as V
 import Control.Lens 
 
+
 class Pretty a where 
   pretty :: a -> String 
 
@@ -118,26 +119,38 @@ instance Pretty RegistryHeader where
             <> "\n\n"
  
 -- 
-data HiveBin = HiveBin {
+data HiveBin = HiveBin {_binHeader ::  HiveBinHeader 
+                       ,_binCells  ::  V.Vector HiveCell} deriving Show 
+instance Pretty HiveBin where 
+  pretty h =  "HiveBin:\n" 
+           <> pretty (_binHeader h) 
+           <> pretty (_binCells h)
+
+           
+data HiveBinHeader = HiveBinHeader {
     _binMagicNumber  :: Bytes 4 
   , _offsetFromFirst :: Word32 -- This bin's distance from the first hive bin 
   , _binSize         :: Word32 -- This hive bin's size (Multiple of 4096) 
   , _unknown16       :: Bytes 16 
   , _nextHiveOffset  :: Bytes 4 -- should be same as binSize 
-  , _cells           :: V.Vector HiveCell
 } deriving Show 
-instance Pretty HiveBin where 
+instance Pretty HiveBinHeader where 
   pretty hb = "Hive Bin:"
            <> "\n  Magic Number: " <> show (_binMagicNumber hb)
            <> "\n  Offset From First Bin: " <> show (_offsetFromFirst hb)
            <> "\n  Bin size (* 4096):" <> show (_binSize hb)
            <> "\n  Next hive offset: " <> show (_nextHiveOffset hb)
-           <> "\n  Cells: " <> (concatMap pretty . V.toList $ _cells hb)  
            <> "\n\n"
 data HiveCell = HiveCell {
-    _cellSize :: Word32 -- cell length (including these 4 bytes)
+   _cellSize    :: Word32 -- cell length (including these 4 bytes)
   , _cellContent :: CellContent  
 } deriving Show 
+
+data RawCell = RawCell {
+   _rawLocation :: Word32 
+  ,_rawSize     :: Word32 
+  ,_rawContent  :: BS.ByteString 
+}
 
 instance Pretty HiveCell where 
   pretty hc = "Hive Cell:" 
@@ -205,11 +218,6 @@ data NKRecord = NKRecord {
   , _keyNameLength     :: Word32 -- length of key name 
   , _classNameLength   :: Word32 -- length of class name 
   , _keyString         :: BS.ByteString -- Key name. Stored in ASCII. Typically null-terminated.
-  , _subkeylistStable  :: Maybe SubkeyList
-  , _subkeylistVol     :: Maybe SubkeyList  
-  , _valueList         :: Maybe ValueList
-  , _subkeys           :: V.Vector NKRecord 
-  , _values            :: V.Vector VKRecord
 } deriving Show 
 
 instance Pretty NKRecord where 
@@ -229,11 +237,6 @@ instance Pretty NKRecord where
             <> "\n  Key Name Length: " <> show (_keyNameLength nk)
             <> "\n  Class Name Length: " <> show (_classNameLength nk)
             <> "\n  Key String: " <> show (_keyString nk)
-            <> "\n  Subkey List (Stable): " <> pretty (_subkeylistStable nk)
-            <> "\n  Subkey List (Volatile): " <> pretty (_subkeylistVol nk)
-            <> "\n  Value List: " <> pretty (_valueList nk)
-            <> "\n  Subkeys: " <> pretty (_subkeys nk)
-            <> "\n  Values:  " <> pretty (_values nk) 
             <> "\n\n"
 
 
