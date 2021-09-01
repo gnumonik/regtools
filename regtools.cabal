@@ -28,6 +28,7 @@ library
       Lib
       Types
       ParseM
+      Explore
   other-modules:
       Paths_regtools
   hs-source-dirs:
@@ -44,12 +45,10 @@ library
     , transformers
     , lens 
     , stm
-    , monad-par 
     , text 
-    , comonad
-    , free
     , async
-    , profunctors
+    , monad-errors
+    , lens-action
     
   default-language: Haskell2010
   default-extensions: 

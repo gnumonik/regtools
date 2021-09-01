@@ -1,15 +1,20 @@
 module Types where
 
-import Data.Serialize 
-import Data.Serialize.Get
-import Data.Word 
+import Data.Serialize
+    ( getBytes,
+      getWord16le,
+      getWord32be,
+      getWord32le,
+      runGet,
+      Serialize(..),
+      Get ) 
+import Data.Word ( Word16, Word32, Word64 ) 
 import qualified Data.ByteString as BS 
-import GHC.TypeLits 
-import Data.Kind 
-import Data.Proxy 
-import System.IO 
+import GHC.TypeLits ( KnownNat, Nat, natVal ) 
+import Data.Kind ( Type ) 
+import Data.Proxy ( Proxy(Proxy) ) 
 import qualified Data.Vector as V
-import Control.Lens 
+import Control.Lens ( makePrisms, makeLenses, Prism' ) 
 
 
 class Pretty a where 
@@ -126,7 +131,6 @@ instance Pretty HiveBin where
            <> pretty (_binHeader h) 
            <> pretty (_binCells h)
 
-           
 data HiveBinHeader = HiveBinHeader {
     _binMagicNumber  :: Bytes 4 
   , _offsetFromFirst :: Word32 -- This bin's distance from the first hive bin 
@@ -134,6 +138,7 @@ data HiveBinHeader = HiveBinHeader {
   , _unknown16       :: Bytes 16 
   , _nextHiveOffset  :: Bytes 4 -- should be same as binSize 
 } deriving Show 
+
 instance Pretty HiveBinHeader where 
   pretty hb = "Hive Bin:"
            <> "\n  Magic Number: " <> show (_binMagicNumber hb)
@@ -141,22 +146,16 @@ instance Pretty HiveBinHeader where
            <> "\n  Bin size (* 4096):" <> show (_binSize hb)
            <> "\n  Next hive offset: " <> show (_nextHiveOffset hb)
            <> "\n\n"
+
 data HiveCell = HiveCell {
    _cellSize    :: Word32 -- cell length (including these 4 bytes)
   , _cellContent :: CellContent  
 } deriving Show 
 
-data RawCell = RawCell {
-   _rawLocation :: Word32 
-  ,_rawSize     :: Word32 
-  ,_rawContent  :: BS.ByteString 
-}
-
 instance Pretty HiveCell where 
   pretty hc = "Hive Cell:" 
            <> "\n  Cell Size: " <> show (_cellSize hc)
            <> "\n  Cell Content: \n" <> pretty (_cellContent hc)  
-
 
 data CellContent = SK SKRecord 
                  | NK NKRecord 
@@ -172,8 +171,6 @@ instance Pretty CellContent where
     Subkeylist x -> pretty x 
     Valuelist x  -> pretty x 
     RawDataBlocks bs -> show bs 
-
-
 
 data SKRecord = SKRecord {
     _skMagicNumber :: Bytes 2 -- String "sk"
@@ -194,7 +191,6 @@ instance Pretty SKRecord where
            <> "\n  Security Descriptor Size: " <> show (_secDescrSize sk)
            <> "\n  Security Descriptor: " <> show (_secDescriptor sk)
            <> "\n\n"
-
 
 data NKRecord = NKRecord {
     _nkMagicNum        :: Bytes 2 -- string "nk"
@@ -239,7 +235,6 @@ instance Pretty NKRecord where
             <> "\n  Key String: " <> show (_keyString nk)
             <> "\n\n"
 
-
 data VKRecord = VKRecord {
     _vkMagicNum    :: Bytes 2 
   , _valNameLength :: Word16 
@@ -266,7 +261,6 @@ instance Pretty VKRecord where
 
 type ValueList = V.Vector Word32-- i think? 
 
-
 data SubkeyList = SubkeyList {
     _subkeyListMagicNum :: Bytes 2 -- Magic number "lf" "lh" "ri" or "li"
   , _numElems           :: Word16 
@@ -284,7 +278,6 @@ data SubkeyElem = Ri Word32-- pointer to another subkey LIST
                 | Lf Word32 Word32 -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh)
                 | Lh Word32 Word32 -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh) deriving Show 
   deriving Show 
-
 
 data Value = REG_NONE BS.ByteString -- 0x0
                | REG_SZ BS.ByteString --  0x1 UTF-16 little-endian string 
@@ -305,6 +298,16 @@ instance Pretty Value where
   pretty = show 
 
 makePrisms ''CellContent
+makeLenses ''RegistryHeader 
+makeLenses ''HiveBin 
+makeLenses ''HiveBinHeader 
+makeLenses ''HiveCell 
+makeLenses ''SKRecord 
+makeLenses ''NKRecord 
+makeLenses ''VKRecord 
+makeLenses ''SubkeyList 
+makePrisms ''SubkeyElem 
+makePrisms ''Value
 
 class IsCC a where 
   cc :: Prism' CellContent a 
@@ -329,3 +332,4 @@ instance IsCC BS.ByteString where
 
 instance IsCC CellContent where 
   cc = id 
+
