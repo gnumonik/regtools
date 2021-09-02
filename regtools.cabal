@@ -29,6 +29,7 @@ library
       Types
       ParseM
       Explore
+      Time
   other-modules:
       Paths_regtools
   hs-source-dirs:
@@ -49,6 +50,7 @@ library
     , async
     , monad-errors
     , lens-action
+    , time
     
   default-language: Haskell2010
   default-extensions: 

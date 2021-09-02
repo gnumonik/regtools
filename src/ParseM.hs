@@ -17,14 +17,14 @@ import Control.Lens
       makeLenses,
       Bifunctor(bimap),
       Field1(_1) ) 
-import Types ( HiveCell(HiveCell), IsCC(..) ) 
+import Types 
 import Control.Monad.Reader
     ( MonadIO(liftIO), ReaderT(runReaderT), MonadReader(ask) )
 import Control.Concurrent.STM
     ( atomically, TVar, readTVarIO, modifyTVar' )
 import qualified Data.Map.Strict as M
 import Control.Monad.IO.Class ( MonadIO(liftIO) )
-import Control.Monad (MonadPlus(mzero))
+import Control.Monad (MonadPlus(mzero), void, (<$!>))
 import qualified Data.Text as T
 import Control.Monad.Reader.Class ( MonadReader(ask) ) 
 import Control.Monad.Trans.State ( StateT )
@@ -33,8 +33,11 @@ import Control.Monad.Errors.Class
     ( MonadErrors(report, liftE, unliftE, runE, catchE) ) 
 import qualified Data.Sequence as S  
 import Control.Monad.State ( MonadIO(liftIO) )
-
-data ParseErr = ParseErr Word32 ErrorType deriving Show
+import qualified Data.Set as Set 
+import Control.Concurrent.Async 
+import Data.List (foldl')
+import Control.Monad (foldM)
+data ParseErr = ParseErr Word32 CCTok ErrorType deriving Show
 
 data ErrorType = CellTypeMismatch 
                | SerializeError T.Text deriving Show 
@@ -42,6 +45,20 @@ data ErrorType = CellTypeMismatch
 type ParseErrs = S.Seq ParseErr
 
 data ParseOutput a = ParseOutput Word32 Word32 a  
+
+{--
+Need a structure that records start and end points, and always overwrites (start,end) with 
+(start,end') when end' > end 
+
+--}
+
+newtype OccupiedSpace = OccupiedSpace {getSpace :: M.Map Word32 Word32} deriving (Show, Eq)
+
+mapOS :: (M.Map Word32 Word32 -> M.Map Word32 Word32)
+       -> OccupiedSpace -> OccupiedSpace
+mapOS f (OccupiedSpace m) = OccupiedSpace $ f m 
+
+
 
 unOut :: ParseOutput a -> a
 unOut (ParseOutput _ _ a) = a 
@@ -57,10 +74,12 @@ data RegEnv = RegEnv {_parsed       :: M.Map Word32 HiveCell
                      ,_rawBS        :: BS.ByteString 
                      ,_parseErrs    :: ParseErrs
                      ,_offset       :: Word32 
-                     ,_unparsed     :: FunSet}
+                     ,_spaceMap     :: OccupiedSpace}
 makeLenses ''RegEnv 
 
 type Driver = TVar RegEnv
+
+
 
 type ParseM = ErrorsT ParseErrs (ReaderT Driver IO)
 
@@ -70,23 +89,17 @@ exclude (start,len) old x = old x && not (x >= start && x <= start + len)
 look ::  ParseM Driver 
 look = unliftE ask  
 
-parseError :: Word32 -> T.Text -> forall a. ParseM a
-parseError w t = report . S.singleton $ ParseErr w (SerializeError t)
-
 logSuccess :: forall a. IsCC a => ParseOutput a -> ReaderT Driver IO (ParseOutput a)
 logSuccess x@(ParseOutput l s a) = ask >>= \e -> do 
   liftIO . atomically . modifyTVar' e 
     $ over parsed (M.insert l $ HiveCell s (cc @a # a))
-    . over unparsed (exclude (s,l))
+    . over spaceMap (mapOS (M.alter go (l-4))) 
   pure x
-
-parseM :: Word32 -> Get a -> ParseM (ParseOutput a)
-parseM offset g = look >>= (liftIO . readTVarIO) >>= \x -> 
-  let c =  BS.drop (fromIntegral offset) $ x ^. rawBS 
-  in  liftE . toOutput offset . runGet (getContent g) $ c 
-
-parseM' :: Word32 -> Get b -> ErrorsT ParseErrs (ReaderT Driver IO) b
-parseM' l  = fmap (\(ParseOutput _ _ a) -> a) . parseM l
+ where 
+   go :: Maybe Word32 -> Maybe Word32 
+   go = \case 
+      Nothing -> Just (l+s)
+      Just s' -> if (l+s) > s' then Just (l+s) else Just s' 
 
 parseCC :: forall a. (IsCC a, Show a)=> Word32 -> Get a -> ParseM (ParseOutput a)
 parseCC off g =  look >>= (liftIO . readTVarIO) >>= \x -> 
@@ -96,10 +109,10 @@ parseCC off g =  look >>= (liftIO . readTVarIO) >>= \x ->
         Nothing ->  unliftE 
                   . logSuccess
                   =<< (logError
-                  . bimap (S.singleton . ParseErr off . SerializeError . T.pack) (uncurry (ParseOutput off)) 
+                  . toOutput off 
                   $ runGet (getContent g) c)
         Just (HiveCell s a) -> case a ^? cc @a of
-          Nothing -> report . S.singleton $ ParseErr off CellTypeMismatch 
+          Nothing -> report . S.singleton $ ParseErr off (cTok @a) CellTypeMismatch 
           Just ax -> pure $ ParseOutput off s ax   
 
 logError :: Show a => Either ParseErrs a -> ParseM a
@@ -109,8 +122,8 @@ logError = \case
     liftIO . atomically . modifyTVar' e $ over parseErrs (err <>) 
     report  err
 
-toOutput :: forall a.  Word32 -> Either String (Word32, a) -> Either (S.Seq ParseErr) (ParseOutput a)
-toOutput offset = bimap (S.singleton . ParseErr offset . SerializeError . T.pack) (uncurry (ParseOutput offset))
+toOutput :: forall a. IsCC a => Word32 -> Either String (Word32, a) -> Either (S.Seq ParseErr) (ParseOutput a)
+toOutput offset = bimap (S.singleton . ParseErr offset (cTok @a). SerializeError . T.pack) (uncurry (ParseOutput offset))
 
 getContent :: forall a. Get a -> Get (Word32,a)
 getContent g =  do 
@@ -119,11 +132,10 @@ getContent g =  do
   pure (bread,a )
 
 parseCC' :: (IsCC b, Show b) => Word32 -> Get b -> ParseM b
-parseCC' offset g = datastart >>= \x -> 
-  parseCC offset g >>= \case 
+parseCC' offset g = parseCC offset g >>= \case 
   ParseOutput _ _ o -> pure o 
 
-between' :: Word32 -> Word32 -> ParseM (BS.ByteString)
+between' :: Word32 -> Word32 -> ParseM BS.ByteString
 between' w1 w2 = look >>= (liftIO . readTVarIO) >>= \x ->
   let z = x ^. offset 
       (w1',w2') = (w1+z,w2+z) 
@@ -140,6 +152,7 @@ datastart = look >>= fmap (view offset) . liftIO . readTVarIO
 
 continueWith ::  a -> ParseM a -> ParseM a
 continueWith b !m = catchE (const b) id $! m
+
 
 
 -----------------

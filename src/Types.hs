@@ -15,10 +15,15 @@ import Data.Kind ( Type )
 import Data.Proxy ( Proxy(Proxy) ) 
 import qualified Data.Vector as V
 import Control.Lens ( makePrisms, makeLenses, Prism' ) 
+import Data.Time.Clock
+import Time
 
 
 class Pretty a where 
   pretty :: a -> String 
+
+instance Pretty UTCTime where 
+  pretty = prettyTime 
 
 -- on the assumption "get" from Data.Serialize always returns `n` bytes given an argument of n, 
 -- if we get `Bytes n` through the `bytes` function, we know the index correctly describes the 
@@ -122,8 +127,7 @@ instance Pretty RegistryHeader where
             <> "\n  Hive Name(?): " <> show (_hiveName rh)
             <> "\n  Checksum: " <> show (_checksum rh)
             <> "\n\n"
- 
--- 
+
 data HiveBin = HiveBin {_binHeader ::  HiveBinHeader 
                        ,_binCells  ::  V.Vector HiveCell} deriving Show 
 instance Pretty HiveBin where 
@@ -162,7 +166,8 @@ data CellContent = SK SKRecord
                  | VK VKRecord 
                  | Subkeylist SubkeyList 
                  | Valuelist ValueList 
-                 | RawDataBlocks BS.ByteString deriving Show 
+                 | ValueData Value deriving Show 
+
 instance Pretty CellContent where 
   pretty cc = case cc of 
     SK x -> pretty x 
@@ -170,7 +175,7 @@ instance Pretty CellContent where
     VK x -> pretty x 
     Subkeylist x -> pretty x 
     Valuelist x  -> pretty x 
-    RawDataBlocks bs -> show bs 
+    ValueData bs -> show bs 
 
 data SKRecord = SKRecord {
     _skMagicNumber :: Bytes 2 -- String "sk"
@@ -195,7 +200,7 @@ instance Pretty SKRecord where
 data NKRecord = NKRecord {
     _nkMagicNum        :: Bytes 2 -- string "nk"
   , _nkFlags           :: Bytes 2 -- needs more structure 
-  , _nkTimeStamp       :: Bytes 8 
+  , _nkTimeStamp       :: UTCTime
   , _nkUnknown1        :: Bytes 4 
   , _nkOffset1         :: Word32 -- Parent NK record 
   , _stableSubkeys     :: Word32-- set to 0 on deletion  
@@ -211,8 +216,8 @@ data NKRecord = NKRecord {
   , _maxValueNm        :: Word32 -- maximum bytes in a value name 
   , _maxValSize        :: Word32 -- maximum vaalue data size 
   , _nkUnknown2        :: Bytes 4 -- possibly some kind of runtime index 
-  , _keyNameLength     :: Word32 -- length of key name 
-  , _classNameLength   :: Word32 -- length of class name 
+  , _keyNameLength     :: Word16 -- length of key name 
+  , _classNameLength   :: Word16 -- length of class name 
   , _keyString         :: BS.ByteString -- Key name. Stored in ASCII. Typically null-terminated.
 } deriving Show 
 
@@ -220,7 +225,7 @@ instance Pretty NKRecord where
   pretty nk = "NKRecord: "
             <> "\n  Magic Num: " <> show (_nkMagicNum nk)
             <> "\n  Flags: " <> show (_nkFlags nk)
-            <> "\n  TimeStamp: " <> show (_nkTimeStamp nk)
+            <> "\n  TimeStamp: " <> pretty (_nkTimeStamp nk)
             <> "\n  Offset to Parent: " <> show (_nkOffset1 nk)
             <> "\n  Number of Subkeys (Stable): " <> show (_stableSubkeys nk)
             <> "\n  Number of Subkeys (Volatile): " <> show (_unstableSubkeys nk)
@@ -279,6 +284,8 @@ data SubkeyElem = Ri Word32-- pointer to another subkey LIST
                 | Lh Word32 Word32 -- first arg is a pointer to an NK record, second is a hash value (computed differently for Lf and Lh) deriving Show 
   deriving Show 
 
+
+
 data Value = REG_NONE BS.ByteString -- 0x0
                | REG_SZ BS.ByteString --  0x1 UTF-16 little-endian string 
                | REG_EXPAND_SZ BS.ByteString -- 0x2 UTF-16 little-endian string w/ system path variable (e.g. "%SYSTEMROOT%") escapes 
@@ -309,27 +316,39 @@ makeLenses ''SubkeyList
 makePrisms ''SubkeyElem 
 makePrisms ''Value
 
+data CCTok = SKRec 
+           | NKRec 
+           | VKRec 
+           | SKList 
+           | VList 
+           | Val deriving (Show, Eq)
+
 class IsCC a where 
   cc :: Prism' CellContent a 
+  cTok :: CCTok 
 
 instance IsCC SKRecord where 
   cc = _SK 
+  cTok = SKRec 
 
 instance IsCC NKRecord where 
   cc = _NK 
+  cTok = NKRec 
 
 instance IsCC VKRecord where 
   cc = _VK 
+  cTok = VKRec 
 
 instance IsCC SubkeyList where 
   cc = _Subkeylist 
+  cTok = SKList 
 
 instance IsCC ValueList where 
-  cc = _Valuelist 
+  cc = _Valuelist
+  cTok = VList  
 
-instance IsCC BS.ByteString where 
-  cc = _RawDataBlocks  
+instance IsCC Value where 
+  cc = _ValueData  
+  cTok = Val 
 
-instance IsCC CellContent where 
-  cc = id 
 
