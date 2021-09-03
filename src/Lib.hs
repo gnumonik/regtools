@@ -1,5 +1,5 @@
 {-# LANGUAGE TupleSections, RecordWildCards, BinaryLiterals #-}
-module Lib where
+module Lib ( HiveData, checkVKPointer, valueData , peek, testParseHeader, hiveData, testhivepath) where
 
 import Data.Serialize
     ( bytesRead,

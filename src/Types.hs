@@ -17,7 +17,7 @@ import qualified Data.Vector as V
 import Control.Lens ( makePrisms, makeLenses, Prism' ) 
 import Data.Time.Clock
 import Time
-
+import Data.List 
 
 class Pretty a where 
   pretty :: a -> String 
@@ -72,7 +72,10 @@ toWord16le (Bytes bs) = case runGet getWord16le bs of
   Right w -> w 
   
 instance Pretty a => Pretty (V.Vector a) where 
-  pretty as = concatMap pretty . V.toList $ as 
+  pretty = pretty . V.toList 
+
+instance Pretty a => Pretty [a] where 
+  pretty = intercalate "\n" . map pretty  
 
 instance Pretty a => Pretty (Maybe a) where 
   pretty = show . fmap pretty 

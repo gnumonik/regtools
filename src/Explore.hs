@@ -1,27 +1,57 @@
 module Explore where
 
 import Data.Word 
-import Types 
-import Lib 
+import Types hiding (stableSubkeys)
+import Lib ( HiveData, checkVKPointer, valueData ) 
 import ParseM 
 import Control.Lens 
 import qualified Data.Map as M 
 import qualified Data.Vector as V 
 import Data.Foldable (Foldable(foldl'))
 import qualified Data.ByteString as BS
+import Data.Kind 
 import Debug.Trace 
 import Data.Char (ord)
+import Control.Monad.State 
+import Control.Monad.Reader 
+import Data.Serialize
+import Data.Maybe (catMaybes, mapMaybe)
+import Control.Lens.Action 
+
 makeLenses ''HiveData 
+
+data ExploreState :: Type -> Type  where 
+   ExploreState :: IsCC a => {
+    _hData :: HiveData 
+  , _focus :: a 
+} -> ExploreState a 
+
+type ExploreM = ReaderT HiveData IO 
+
+type MFold s a = MonadicFold ExploreM s a 
 
 newtype NotFound = NotFound Word32 deriving (Show, Eq, Ord)
 
 newtype WrongType = WrongType Word32 deriving (Show, Eq, Ord)
 
-rootCell :: Fold HiveData HiveCell 
+query :: Monad m => r -> Acting (ReaderT r m) (Leftmost a) r a -> m (Maybe a)
+query reg l = runReaderT (reg ^!? l) reg 
+
+mkMonadicFold :: (s -> m a) -> MonadicFold m s a 
+mkMonadicFold = act 
+
+
+takin' :: Int -> Fold [a] [a]
+takin' n = folding (Identity . take n)
+
+pPrint :: Pretty a => MFold a ()
+pPrint = mkMonadicFold $ liftIO . putStrLn . ("\n\n" <>) . pretty 
+
+rootCell :: Fold HiveData NKRecord 
 rootCell = folding go 
   where 
-    go :: HiveData -> Maybe HiveCell 
-    go hData = hData ^? (hEnv . parsed . ix (hData ^. (hEnv . offset)))
+    go :: HiveData -> Maybe NKRecord 
+    go hData = hData ^? (hEnv . parsed . ix (hData ^. (hEnv . offset)) . content @NKRecord)
 
 hiveCell :: Word32 -> Fold HiveData HiveCell 
 hiveCell i = folding go 
@@ -41,95 +71,125 @@ regItem w = folding (\hData -> hData ^? (hiveCell w . content @a))
 andThen :: forall a b. (a -> b) -> Fold a b 
 andThen f = folding (\a -> Identity $ f a)
 
+andThenM :: forall a b. (a -> ExploreM b) -> MFold a b 
+andThenM = mkMonadicFold  
+
 mappin' :: forall a b. (a -> b) -> Fold [a] [b]
 mappin' f = andThen (map f) 
 
-stableChildren :: HiveData -> Fold NKRecord [Either NotFound NKRecord]
-stableChildren hData = folding go 
+mapped :: forall a b. (MFold a b) -> MFold [a] [b]
+mapped f = mkMonadicFold go 
   where 
-    f ::  [Either NotFound NKRecord] -> SubkeyElem -> [Either NotFound NKRecord]
-    f acc ske = case ske of 
+    go :: [a] -> ExploreM [b]
+    go xs = catMaybes <$> mapM (^!? f) xs
+
+concatMapped :: forall a b. (Fold a [b]) -> Fold [a] [b]
+concatMapped f = folding go 
+  where 
+    go xs = Just . concat $ mapMaybe (^? f) xs 
+
+
+stableSubkeys :: MFold NKRecord [NKRecord]
+stableSubkeys = mkMonadicFold go 
+  where 
+    f ::  HiveData -> [NKRecord] -> SubkeyElem -> [NKRecord]
+    f hData acc ske = case ske of 
       Ri w -> case hData ^? (hiveCell w . content @SubkeyList) of 
                 Nothing -> acc 
-                Just skl -> acc <> V.foldl' f [] (skl ^. subkeyElems) 
-      Li w    -> lookupChild acc w 
-      Lf w w2 -> lookupChild acc w 
-      Lh w w2 -> lookupChild acc w 
+                Just skl -> acc <> V.foldl' (f hData) [] (skl ^. subkeyElems) 
+      Li w    -> lookupChild hData acc w 
+      Lf w w2 -> lookupChild hData acc w 
+      Lh w w2 -> lookupChild hData acc w 
 
-    lookupChild :: [Either NotFound NKRecord] -> Word32 -> [Either NotFound NKRecord]
-    lookupChild acc w = case hData ^? (hiveCell w . content @NKRecord) of 
-               Nothing -> Left (NotFound w) : acc
-               Just nk -> Right nk : acc  
+    lookupChild :: HiveData -> [NKRecord] -> Word32 -> [NKRecord]
+    lookupChild hData acc w = case hData ^? (hiveCell w . content @NKRecord) of 
+               Nothing -> acc
+               Just nk -> nk : acc  
 
-    go :: NKRecord -> Maybe [Either NotFound NKRecord]
+    go :: NKRecord -> ExploreM [NKRecord]
     go nk = if ok 
-            then Just $ case hData ^? (hiveCell stblPtr . content @SubkeyList) of 
-                          Nothing -> [Left $ NotFound stblPtr]
-                          Just skl -> V.foldl' f  [] (skl ^. subkeyElems) 
-            else Nothing
+            then ask >>= \hData -> case hData ^? (hiveCell stblPtr . content @SubkeyList) of   
+                          Nothing -> pure []
+                          Just skl -> pure $ V.foldl' (f hData)  [] (skl ^. subkeyElems) 
+            else pure []
       where 
             stblPtr = nk ^. stableSubkeyPtr
-            numSK   = nk ^. stableSubkeys
+            numSK   = _stableSubkeys nk
             ok      = numSK /= 0 && stblPtr /= 0 && stblPtr /= (maxBound :: Word32)
 
-volatileChildren :: HiveData -> Fold NKRecord [Either NotFound NKRecord]
-volatileChildren hData = folding go 
+volatileSubkeys :: MFold NKRecord [NKRecord]
+volatileSubkeys = mkMonadicFold go 
   where 
-    f ::  [Either NotFound NKRecord] -> SubkeyElem -> [Either NotFound NKRecord]
-    f acc ske = case ske of 
+    f ::  HiveData -> [NKRecord] -> SubkeyElem -> [NKRecord]
+    f hData acc ske = case ske of 
       Ri w -> case hData ^? (hiveCell w . content @SubkeyList) of 
                 Nothing -> acc 
-                Just skl -> acc <> V.foldl' f [] (skl ^. subkeyElems) 
-      Li w    -> lookupChild acc w 
-      Lf w w2 -> lookupChild acc w 
-      Lh w w2 -> lookupChild acc w 
+                Just skl -> acc <> V.foldl' (f hData) [] (skl ^. subkeyElems) 
+      Li w    -> lookupChild hData acc w 
+      Lf w w2 -> lookupChild hData acc w 
+      Lh w w2 -> lookupChild hData acc w 
 
-    lookupChild :: [Either NotFound NKRecord] -> Word32 -> [Either NotFound NKRecord]
-    lookupChild acc w = case hData ^? (hiveCell w . content @NKRecord) of 
-               Nothing -> Left (NotFound w) : acc
-               Just nk -> Right nk : acc  
+    lookupChild :: HiveData -> [NKRecord] -> Word32 -> [NKRecord]
+    lookupChild hData acc w = case hData ^? (hiveCell w . content @NKRecord) of 
+               Nothing -> acc
+               Just nk -> nk : acc  
 
-    go :: NKRecord -> Maybe [Either NotFound NKRecord]
+    go :: NKRecord -> ExploreM [NKRecord]
     go nk = if ok 
-            then Just $ case hData ^? (hiveCell volPtr . content @SubkeyList) of 
-                          Nothing -> [Left $ NotFound volPtr]
-                          Just skl -> V.foldl' f  [] (skl ^. subkeyElems) 
-            else Nothing
+            then ask >>= \hData -> case hData ^? (hiveCell volPtr . content @SubkeyList) of   
+                          Nothing -> pure []
+                          Just skl -> pure $ V.foldl' (f hData)  [] (skl ^. subkeyElems) 
+            else pure []
       where 
-            volPtr = nk ^. unstableSubkeyPtr
-            numSK   = nk ^. unstableSubkeys
+            volPtr  = nk ^. stableSubkeyPtr
+            numSK   = _stableSubkeys nk
             ok      = numSK /= 0 && volPtr /= 0 && volPtr /= (maxBound :: Word32)
 
-vks :: HiveData -> Fold NKRecord [VKRecord]
-vks hData = folding go 
+vks :: MFold NKRecord [VKRecord]
+vks = mkMonadicFold go 
   where 
-    go :: NKRecord -> Maybe [VKRecord]
+    go :: NKRecord -> ExploreM [VKRecord]
     go nk = if ok 
-            then case hData ^? (hiveCell vlPtr . content @ValueList) of 
-                          Nothing -> Nothing
-                          Just vList -> Just $ lookupMany @VKRecord hData vList 
-            else Nothing 
+            then ask >>= \hData -> 
+              case hData ^? (hiveCell vlPtr . content @ValueList) of 
+                        Nothing -> pure [] 
+                        Just vList -> vList ^!? (lookupMany @VKRecord) >>= \case 
+                          Nothing -> pure [] 
+                          Just xs -> pure xs 
+            else pure []
       where 
         vlPtr = nk ^. valueListPtr 
         numVs = nk ^. numValues 
         ok    = numVs /= 0 && vlPtr /= 0 && vlPtr /= (maxBound :: Word32)
 
-lookupMany :: forall a f. (IsCC a, Foldable f) => HiveData -> f Word32 -> [a]
-lookupMany hData as = foldl' go [] as 
+val :: MFold VKRecord (Maybe Value) 
+val  = mkMonadicFold go 
   where 
-    go :: [a] -> Word32 -> [a]
-    go acc w = case hData ^? (hiveCell w . content @a) of 
+    go :: VKRecord -> ExploreM (Maybe Value) 
+    go vk = if checkVKPointer (vk ^. dataLength)
+            then ask >>= \hData -> pure $ hData ^? regItem @Value (vk ^. dataPtr)
+            else case runGet (valueData 4 (vk ^. valueType)) (runPut . putWord32le $ vk ^. dataPtr) of 
+                  Left err -> trace err $ pure Nothing 
+                  Right v  -> pure $ Just v 
+ 
+lookupMany :: forall a f. (IsCC a, Foldable f) => MFold (f Word32)  [a]
+lookupMany = mkMonadicFold $ \as -> ask >>= \hData -> pure $ foldl' (go hData) [] as 
+  where 
+    go :: HiveData -> [a] -> Word32 -> [a]
+    go hData acc w = case hData ^? (hiveCell w . content @a) of 
       Nothing -> acc 
       Just a  -> a:acc 
 
-findCell :: forall a. IsCC a => HiveData -> (a -> Bool) -> [(Word32,a)]
-findCell hData p = M.foldlWithKey go [] (hData ^. (hEnv . parsed))
+findCell :: forall a. IsCC a => MFold (a -> Bool) [(Word32,a)]
+findCell  = mkMonadicFold go 
   where 
-    go :: [(Word32,a)] -> Word32 -> HiveCell -> [(Word32,a)]
-    go acc i c = case c ^? content @a of
-      Nothing -> acc 
-      Just a  -> if p a then (i,a):acc else acc 
-
+    go :: (a -> Bool) -> ExploreM [(Word32,a)]
+    go p = ask >>= \hData -> pure $ M.foldlWithKey f [] (hData ^. (hEnv . parsed))
+      where 
+        f :: [(Word32,a)] -> Word32 -> HiveCell -> [(Word32,a)]
+        f acc i c = case c ^? content @a of
+          Nothing -> acc 
+          Just a  -> if p a then (i,a):acc else acc 
 
 hasSubkeyElem :: HiveData -> Word32 -> SubkeyList -> Bool 
 hasSubkeyElem hData w skl = go (V.toList $ skl ^. subkeyElems) 
@@ -140,11 +200,9 @@ hasSubkeyElem hData w skl = go (V.toList $ skl ^. subkeyElems)
       Ri wx -> case hData ^? (regItem @SubkeyList wx) of 
                 Nothing -> False 
                 Just skl' -> hasSubkeyElem hData w skl' 
-      Li wx -> wx == w || go xs 
-      Lf wx _ -> wx == w || go xs 
+      Li wx    -> wx == w || go xs 
+      Lf wx _  -> wx == w || go xs 
       Lh wx _  -> wx == w || go xs  
-
-
 
 deadZones :: HiveData -> Word32 -> [(Word32,Word32)]
 deadZones hData minSize = case occupied  of 
@@ -158,7 +216,6 @@ deadZones hData minSize = case occupied  of
    go acc lastEnd ((nextStart,nextEnd):rest) 
     | (lastEnd+1) == nextStart = go acc nextEnd rest 
     | abs (nextStart - lastEnd) < minSize = go acc nextEnd rest 
-    --  | lastEnd == nextStart     = go acc nextEnd rest 
     | otherwise            = go ((lastEnd+1,nextStart-1):acc) nextEnd rest       
 
 nonEmptyDeadZoneData :: HiveData -> Word32 -> [(Word32,Word32,BS.ByteString)]
@@ -170,35 +227,3 @@ nonEmptyDeadZoneData hData minSize = foldl' go [] $ deadZones hData minSize
                        then acc 
                        else (s,e,bs):acc
                    
-
-    {--
-    start = hData ^. (hEnv . offset)
-
-    f :: Word32 -> Bool 
-    f = exclude (0,start) $ hData ^. (hEnv . unparsed)
-
-    raw = BS.take 5000 $ hData ^. (hEnv . rawBS)
-
-    len = fromIntegral $ BS.length raw 
-
-    chunks = goChunks [] 0 
-
-    nextChunk :: Word32 -> (Word32,Word32)
-    nextChunk i 
-      | i >= len = trace ("nextChunk reached end of BS at " <> show i) (i,i) 
-      | f i = trace ("nextChunk calling firstEndPoint at " <> show i) (i,findEndPoint i (i+1)) 
-      | otherwise = trace ("searching for start of next chunk @" <> show (i + 1)) nextChunk (i+1) 
-  
-    findEndPoint :: Word32 -> Word32 -> Word32 
-    findEndPoint i i' 
-      | i >= len  = trace ("findEndPoint reached end of BS at" <> show i)  i 
-      | i' >= len = trace ("findEndPoint reached end of BS at" <> show i') i' 
-      | f i'      = trace ("searching for endpoint @" <> show (i + 1))findEndPoint i' (i' +1)
-      | otherwise = i  
-
-    goChunks :: [(Word32,Word32)] -> Word32 -> [(Word32,Word32)]
-    goChunks acc i 
-      | i >= len = trace "goChunks ended" acc 
-      | otherwise = let next@(x,y) = nextChunk i 
-                    in  trace ("goChunks got a chunk " <> show next) goChunks (next:acc) (y+1)
-    --}
