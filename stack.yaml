@@ -42,7 +42,10 @@ packages:
 extra-deps: 
 - row-types-1.0.1.0@sha256:62d274be07da06aafe2d94b58818234e89e53864d2f65956da2903784c0005a7,2865
 - ../monad-errors
-
+- ../monad-look
+- bytestring-encoding-0.1.1.0@sha256:1c3b97eb6345fd7153006211c8272215cd78bb0cf440c41185290822f1e3f2c2,1738
+- wl-pprint-1.2.1@sha256:aea676cff4a062d7d912149d270e33f5bb0c01b68a9db46ff13b438141ff4b7c,734
+- hex-text-0.1.0.4@sha256:0ea54d08f85324498b2db3480f05efc17eb03177c564fce81dadef53752db2c5,1277
 # Override default flag values for local packages and extra-deps
 # flags: {}
 

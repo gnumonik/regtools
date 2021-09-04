@@ -1,5 +1,5 @@
 {-# LANGUAGE TupleSections, RecordWildCards, BinaryLiterals #-}
-module Lib ( HiveData, checkVKPointer, valueData , peek, testParseHeader, hiveData, testhivepath) where
+module Lib ( HiveData, checkVKPointer, valueData , peek, testParseHeader, readHive, testhivepath) where
 
 import Data.Serialize
     ( bytesRead,
@@ -75,14 +75,14 @@ w32 = getWord32le
 w16 :: Get Word16 
 w16 = getWord16le 
 
-hiveData :: FilePath -> IO HiveData 
-hiveData fPath = do 
+readHive :: FilePath -> IO HiveData 
+readHive fPath = do 
   bs <- BS.readFile testhivepath 
   registry bs >>= \case 
     Left err -> error err 
     Right (rH,hH,tv) -> do 
-      e <- readTVarIO tv
-      pure $ HiveData rH hH e 
+      !e <- readTVarIO tv
+      pure $! HiveData rH hH e 
 
 testhivepath :: FilePath 
 testhivepath = "/home/gsh/Downloads/SeanStuff/hkeyclassesroot"

@@ -37,6 +37,7 @@ import qualified Data.Set as Set
 import Control.Concurrent.Async 
 import Data.List (foldl')
 import Control.Monad (foldM)
+import Control.Monad.Look
 data ParseErr = ParseErr Word32 CCTok ErrorType deriving Show
 
 data ErrorType = CellTypeMismatch 
@@ -83,11 +84,14 @@ type Driver = TVar RegEnv
 
 type ParseM = ErrorsT ParseErrs (ReaderT Driver IO)
 
+instance MonadLook Driver (ErrorsT ParseErrs (ReaderT Driver IO)) where 
+  look = unliftE ask 
+
+  looks f = f <$> (unliftE ask)
+
 exclude :: (Word32,Word32) -> (Word32 -> Bool) -> (Word32 -> Bool)
 exclude (start,len) old x = old x && not (x >= start && x <= start + len) 
 
-look ::  ParseM Driver 
-look = unliftE ask  
 
 logSuccess :: forall a. IsCC a => ParseOutput a -> ReaderT Driver IO (ParseOutput a)
 logSuccess x@(ParseOutput l s a) = ask >>= \e -> do 
