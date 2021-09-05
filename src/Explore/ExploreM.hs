@@ -27,6 +27,8 @@ import Data.ByteString.Char8 (unpack)
 
 makeLenses ''HiveData
 
+type Printer = String -> IO ()
+
 -- | Type for query errors. Most of the time the Word32 argument will be '0' (in which case it should be ignore)
 --   , but occasionally we can encode the location of the error. (Yes it'd be better if it were `Maybe Word32` but 
 --   it's easier to adopt this convention and since we don't do anything stupendously important with the field it shouldn't matter)
@@ -37,14 +39,17 @@ type QueryErrors = Seq.Seq QueryError
 
 -- | type ExploreM = ErrorsT QueryErrors (ReaderT HiveData IO)
 --   The monad in which registry queries are run. ErrorsT wrapper around a (ReaderT HiveData IO) transformer stack 
-type ExploreM = ErrorsT QueryErrors (ReaderT HiveData IO) 
+type ExploreM = ErrorsT QueryErrors (ReaderT (HiveData,Printer) IO) 
 
 -- | As with other ErrorT stacks, local is either impossible or difficult to define; 
 --   MonadLook is simply a cut-down version of MonadReader that only supports ask/asks 
 instance MonadLook HiveData ExploreM where 
-  look = unliftE ask 
+  look = unliftE ask >>= pure . view _1  
 
-  looks f = f <$> unliftE ask 
+  looks f = f <$> look 
+
+getPrinter :: ExploreM Printer 
+getPrinter = unliftE ask >>= pure . view _2 
 
 -- | The "Queries" that we run are really 'MonadicFold's where the monad wrapping the fold is ExploreM 
 type MFold s a = MonadicFold ExploreM s a 
@@ -92,9 +97,9 @@ instance Pretty RegistryKey where
 
 
 -- | Run a Query on the target HiveData. (Function is like this to support GHCI use)
-query :: HiveData -> Query a -> IO (Either QueryErrors a)
-query reg l  = 
-  runReaderT (runE $! reg ^!? l) reg >>= \case 
+query :: (String -> IO ()) -> HiveData -> Query a -> IO (Either QueryErrors a)
+query printer reg l  = 
+  runReaderT (runE $! reg ^!? l) (reg,printer) >>= \case 
     Left !errs ->  pure . Left $! errs 
     Right Nothing -> pure . Left . Seq.singleton $! QueryError 0 "Query failed to match any targets"
     Right (Just !a) -> pure . Right $! a 

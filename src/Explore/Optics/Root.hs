@@ -47,11 +47,11 @@ lookupMany = mkMonadicFold $ \as -> look >>= \hData -> pure $ foldl' (go hData) 
       Nothing -> acc 
       Just a  -> a:acc 
 
-findCell :: forall a. IsCC a => MFold (a -> Bool) [(Word32,a)]
-findCell  = mkMonadicFold go 
+findCell :: forall a. IsCC a => (a -> Bool) -> Query [a]
+findCell p  = mkMonadicFold go 
   where 
-    go :: (a -> Bool) -> ExploreM [(Word32,a)]
-    go p = look >>= \hData -> pure $ M.foldlWithKey f [] (hData ^. (hEnv . parsed))
+    go :: HiveData  -> ExploreM [a]
+    go hData =  pure . map snd $ M.foldlWithKey f [] (hData ^. (hEnv . parsed))
       where 
         f :: [(Word32,a)] -> Word32 -> HiveCell -> [(Word32,a)]
         f acc i c = case c ^? content @a of

@@ -22,15 +22,21 @@ takin' :: Int -> Fold [a] [a]
 takin' n = folding (Identity . take n)
 
 pPrint :: Pretty a => MFold a ()
-pPrint = mkMonadicFold $ liftIO .putStr . (\x -> displayS x  "") . renderPretty 1.0 200 . pretty 
+pPrint = mkMonadicFold $ \p -> 
+         getPrinter >>= \f -> 
+           liftIO 
+           . f 
+           . (\x -> displayS x  "") 
+           . renderPretty 1.0 200 
+           . pretty
+           $ p 
 
 content :: forall a. IsCC a => Fold HiveCell a 
 content = folding go 
+
   where
     go :: HiveCell -> Maybe a 
     go (HiveCell s c) = c ^? cc @a 
-
-
 
 andThen :: forall a b. (a -> b) -> Fold a b 
 andThen f = folding (\a -> Identity $ f a)

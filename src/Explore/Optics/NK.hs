@@ -7,7 +7,7 @@ import Types
 import Lib
 import qualified Data.Vector as V
 import Data.Word (Word32)
-import Control.Lens ( (^?), (^.) )
+import Control.Lens ( (^?), (^.), to )
 import Explore.Optics.Root
 import Explore.Optics.General
 import Control.Monad.Look
@@ -19,6 +19,8 @@ import Data.Serialize
 import Debug.Trace
 import Explore.Optics.VK
 import qualified Data.ByteString.Char8 as BC
+import Control.Monad
+import Control.Lens.Getter (Getter)
 
 
 stblSubkeys :: MFold NKRecord [NKRecord]
@@ -103,15 +105,22 @@ vks = mkMonadicFold go
         numVs = nk ^. numValues 
         ok    = numVs /= 0 && vlPtr /= 0 && vlPtr /= (maxBound :: Word32)
 
-type Depth = Int 
+type Depth = Word32
 
 -- | Takes a depth argument and produces a RegistryKey data type 
 --   where the "root" is the input NKRecord. The RegistryKey contains 
 --   subkeys of the input NKRecord up to 
 --   the designated depth (if they exist)
 kvs :: Depth -> MFold NKRecord RegistryKey
-kvs depth = mkMonadicFold (getKVs 0 [])
+kvs depth = mkMonadicFold runKVs 
   where 
+
+    runKVs :: NKRecord -> ExploreM RegistryKey 
+    runKVs nk = do
+      hData <- look  
+      let acc = hData ^. getParentPath nk  
+      getKVs 0 acc nk
+
     go :: [BS.ByteString] -> Depth -> MFold NKRecord RegistryKey 
     go acc d = mkMonadicFold (getKVs d acc)
 
@@ -129,10 +138,27 @@ kvs depth = mkMonadicFold (getKVs 0 [])
       | otherwise = do 
           sks1 <- fromMaybe [] <$> nk ^!? stblSubkeys 
           sks2 <- fromMaybe [] <$> nk ^!? volSubkeys 
-          let allSks = sks1 <> sks2 
-          fromMaybe [] <$> allSks ^!? mapped (go acc d)
+          let allSks = sks1 <> sks2
+          case allSks of 
+            [] -> pure []
+            sks ->  fromMaybe [] <$> sks ^!? mapped (go acc d)
 
-    
+allKVs :: MFold NKRecord RegistryKey
+allKVs = kvs (maxBound :: Word32)
+
+getParentPath :: NKRecord -> Getter HiveData [BS.ByteString] 
+getParentPath nk = to runPath  
+  where 
+    runPath :: HiveData ->  [BS.ByteString]
+    runPath hData =  go hData [] (nk ^. nkOffset1)
+
+    go :: HiveData -> [BS.ByteString] -> Word32 -> [BS.ByteString]
+    go hData acc w 
+      | w == (maxBound :: Word32) || w == 0 = reverse acc 
+      | otherwise = case hData ^? (hiveCell w . content @NKRecord) of 
+          Nothing -> reverse acc 
+          Just nk -> let acc' = (nk ^. keyString):acc 
+                     in go hData acc' (nk ^. nkOffset1)
 
 -- Breaks the organizing scheme but idk where else to put it 
 
@@ -154,4 +180,5 @@ keyPath kpath = mkMonadicFold (runKeyPath kpath)
       = nk ^!? (allSubkeys . selectFirst (\n -> n ^. keyString == BC.pack kp)) >>= \case 
           Just nextNK -> go nextNK kps 
           Nothing -> qErr . QueryError 0 $ T.pack ("The key: " <> kp <> " was not found in the volatile or stable subkeylist of its designated parent")
+
 

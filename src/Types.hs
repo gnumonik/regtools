@@ -24,7 +24,15 @@ import qualified Data.Text as T
 import Data.ByteString.Encoding
 import Data.Char (ord)
 import qualified Data.ByteString.Char8 as BC 
-
+import Data.Singletons.TH 
+$(singletons [d| 
+  data CCTok = SKRec 
+            | NKRec 
+            | VKRec 
+            | SKList 
+            | VList 
+            | Val deriving (Show, Eq, Ord)
+  |])
 tshow :: Show a => a -> Doc
 tshow = text . show 
 
@@ -84,8 +92,6 @@ toWord16le (Bytes bs) = case runGet getWord16le bs of
   
 instance Pretty a => Pretty (V.Vector a) where 
   pretty = pretty . V.toList 
-
-
   
 data Registry 
   = Registry { _header :: RegistryHeader 
@@ -95,7 +101,7 @@ instance Pretty Registry where
           <$$> pretty (_header r)
           <$$> pretty (_hives r)
 
-
+ 
 data RegistryHeader 
   = RegistryHeader {
     _hdrMagicNumber :: Bytes 4 -- string "regf"
@@ -205,7 +211,6 @@ instance Pretty SKRecord where
            <$$> t "Ref Count:" <+> tshow (_refCount sk)
            <$$> t "Security Descriptor Size:" <+> tshow (_secDescrSize sk)
            <$$> t "Security Descriptor:" <+> tshow (_secDescriptor sk)
-
 
 data NKRecord = NKRecord {
     _nkMagicNum        :: Bytes 2 -- string "nk"
@@ -349,12 +354,7 @@ makeLenses ''SubkeyList
 makePrisms ''SubkeyElem 
 makePrisms ''Value
 
-data CCTok = SKRec 
-           | NKRec 
-           | VKRec 
-           | SKList 
-           | VList 
-           | Val deriving (Show, Eq)
+
 
 class IsCC a where 
   cc :: Prism' CellContent a 

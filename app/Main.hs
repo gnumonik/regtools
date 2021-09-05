@@ -1,6 +1,7 @@
 module Main where
 
-import Lib
+import Explore.Repl
+import Lib (testhivepath)
 
 main :: IO ()
-main = testParseHeader
+main = initRepl testhivepath

@@ -28,25 +28,13 @@ import Control.Lens ( (^.) )
 import qualified Data.Sequence as S
 
 import ParseM
-    ( RegEnv(RegEnv),
-      ParseOutput(..),
-      ParseErrs,
-      unOut,
-      ParseM,
-      Driver,
-      parseErrs,
-      parsed,
-      parseCC,
-      parseCC',
-      between',
-      runParseM,
-      parseWhen,
-      datastart,
-      continueWith, OccupiedSpace (OccupiedSpace) ) 
+
+
 import Types
 import Control.Monad (void)
 import Time
 import Data.Bits 
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 checkVKPointer :: Word32 -> Bool 
 checkVKPointer w = w .&. 0b10000000000000000000000000000000 /= 0b10000000000000000000000000000000 
@@ -54,6 +42,13 @@ checkVKPointer w = w .&. 0b10000000000000000000000000000000 /= 0b100000000000000
 data HiveData = HiveData {_rHeader :: RegistryHeader 
                          ,_hHeader :: HiveBinHeader 
                          ,_hEnv    :: RegEnv} 
+instance Pretty HiveData where 
+  pretty (HiveData rH hH hEnv) 
+    =       pretty rH
+      <$$>  pretty hH 
+      <$$>  text "Hive Data Size (bytes):" <+> (text . show . BS.length $ _rawBS hEnv)
+      <$$>  text "Number of Cells:" <+> (text . show . M.size $ _parsed hEnv)
+                               
 
 peek :: (Word32 -> Word32) -> Word32 -> IO ()
 peek f x = case sort (x,f x) of {(a,b) -> peekTest b a}
