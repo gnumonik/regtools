@@ -14,7 +14,7 @@ import qualified Data.ByteString as BS
 import Data.Char (ord)
 import qualified Data.Vector as V
 import Control.Lens.Action
-import Explore.ParseDSLYO
+import Explore.ParseDSL
 import Control.Monad.Errors 
 import Control.Monad.Errors.Class 
 import qualified Data.Text as T 
@@ -37,21 +37,34 @@ data DSLValue :: Type where
 
 type EvalM a = ST.StateT ValMap IO  a
 
+data ABORT = ABORT deriving (Show, Eq)
 
-
-evalDSL :: forall a. (String -> IO ()) -> HiveData -> DSLExp a -> EvalM (Maybe QueryErrors)
+-- | Evaluates a DSL expression. First argument is the thread-safe 
+--   printer function Haskeline generates 
+evalDSL :: forall a. (String -> IO ()) -> HiveData -> DSLExp a -> EvalM (Either ABORT (Maybe QueryErrors))
 evalDSL printer hData = \case 
   QueryExp fcs -> case withDict (focDict fcs) $ collapseFocus fcs of 
     MkBoxedMFold fld ->  do 
       liftIO (query printer hData fld)  
-      pure Nothing 
+      pure . Right $ Nothing 
 
   Assign fcs (MkTypedVar txt) -> case withDict (focDict fcs) $ collapseFocus fcs of 
     MkBoxedMFold fld ->  do 
       x <- liftIO (query printer hData fld)
       case x of 
-        Left err -> pure . Just $ err
+        Left err -> pure . Right . Just $ err
         Right (a :: DSLToHask a)  -> do 
           let sF = focSing fcs 
           modify (M.insert txt (MkDSLValue sF a))
-          pure Nothing
+          pure . Right $ Nothing 
+
+  Command cmd -> runCmd cmd 
+
+ where
+
+   runCmd :: forall a. DSLCommand a -> EvalM (Either ABORT (Maybe QueryErrors)) 
+   runCmd = \case 
+      EXIT -> pure . Left $ ABORT 
+
+      
+

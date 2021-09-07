@@ -3,66 +3,36 @@ module Explore.LexDSL where
 
 import Prelude hiding (lex)
 import Text.Megaparsec
-import Text.Megaparsec.Char.Lexer 
-import Explore.Magic 
+    ( (<|>),
+      between,
+      choice,
+      MonadParsec(try),
+      parseTest,
+      many,
+      some,
+      Stream(Token, Tokens), satisfy, notFollowedBy, option, Parsec )
+import Text.Megaparsec.Char.Lexer ( decimal, lexeme ) 
 import qualified Data.Text as T
-import Data.Void
 import Control.Monad (void)
 import Text.Megaparsec.Char
+    ( alphaNumChar, char, lowerChar, spaceChar, string )
 import Data.Functor (($>))
-import Types (CCTok(..))
+import Types
 import Data.Kind (Type)
 import Data.Singletons (SingI (sing), SomeSing (SomeSing), SingKind (toSing), withSingI)
-
--- our go-to indexedcomonadstore. I think we're actually gonna need it :-( 
-import Control.Lens.Internal.Context 
-import Data.Word
-import Explore.Optics.Utils 
-import Data.Singletons.Decide
-
-
-
-type Lexer = Parsec Void T.Text Tok 
+import Data.Void (Void)
 
 sc :: (MonadParsec e s f, Token s ~ Char) => f ()
 sc = void $ many spaceChar 
 
-lex :: (MonadParsec e s m, Token s ~ Char) => m a -> m a
 lex = lexeme sc 
-
-data Tok 
-  = Query 
-  | LArrow 
-  | Pipe 
-  | LParen 
-  | RParen 
-  | QBTok QBToken 
-  | IntLike Int 
-  | CTok CCTok 
-  | LitString T.Text 
-  | Name T.Text deriving (Show, Eq, Ord)
-
-data QBToken 
-  = RegItem 
-  | RootCell 
-  | FindCell 
-  | GetVal 
-  | StblSubkeys 
-  | VolSubkeys 
-  | AllSubkeys 
-  | VKRecs 
-  | KeyValues 
-  | AllKVs 
-  | PPrint 
-  | KeyPath deriving (Show, Eq, Ord)
-
 
 dsltoks :: Lexer 
 dsltoks = choice [
     try query 
   , try intLike 
   , try qbTok 
-  , try cTok 
+  , try cmdTok
   , pipe
   , lArrow 
   , lParen 
@@ -73,6 +43,15 @@ dsltoks = choice [
 testLex :: T.Text -> IO ()
 testLex = parseTest (some dsltoks) 
 
+cmdTok :: Lexer 
+cmdTok = choice [
+    f ":help" HelpTok 
+  , f ":deadSpace" DeadSpaceTok 
+  , f ":exit" ExitTok 
+  ]
+ where 
+    f :: T.Text -> CmdToken -> Lexer 
+    f str t = lex . try $ lexStr_ str $> CmdTok t 
 name :: Lexer 
 name = lex $ do 
   first <- lowerChar 
@@ -81,11 +60,20 @@ name = lex $ do
 
 litString :: (MonadParsec e s m, Token s ~ Char) => m Tok
 litString =  do 
-      s <- between (lexChar_ '"') (lexChar_ '"') (some $ alphaNumChar <|> char ' ') 
+      s <- between (lexChar_ '"') (lexChar_ '"') (some $ satisfy (/= '"')) 
       pure . LitString . T.pack $ s 
 
-lexStr_ :: (MonadParsec e s f, Token s ~ Char) => Tokens s -> f ()
-lexStr_ str = void . lex $ string str  
+lexStr_ :: T.Text -> Parsec Void T.Text ()
+lexStr_ str = void . lex $ go 
+  where 
+    go :: Lexer_ 
+    go = do 
+      s <- string str 
+      nope <- option Nothing (Just <$> alphaNumChar)
+      case nope of 
+        Nothing -> pure ()
+        Just _  -> fail "boom"
+
 
 lexChar_ :: (MonadParsec e s f, Token s ~ Char) => Char -> f ()
 lexChar_ c = void . lex $ char c 
@@ -106,38 +94,25 @@ rParen :: Lexer
 rParen = lexChar_ ')' $> RParen 
 
 intLike :: Lexer 
-intLike = IntLike . fromIntegral <$> decimal 
+intLike = lex $ IntLike . fromIntegral <$> decimal 
 
 qbTok :: Lexer 
 qbTok 
   = choice [
-    f "regItem"  RegItem
-  , f "rootCell" RootCell
-  , f "findCell" FindCell 
-  , f "getVal"   GetVal  
-  , f "stblSubkeys" StblSubkeys 
-  , f "volSubkeys" VolSubkeys  
-  , f "allSubkeys" AllSubkeys  
-  , f "vkRecs" VKRecs  
-  , f "keyValues" KeyValues  
-  , f "allKVs" AllKVs 
-  , f "keyPath" KeyPath
+    f "root" RootCell
+  , f "key" KeyPath
   , f "print" PPrint 
+  , f "writeJSON" WriteJSON
+  , f "keyName" MatchName 
+  , f "valName" MatchValName
+  , f "valData" MatchValData 
+  , f "map" Map 
+  , f "select" Select 
+  , f "concatMap" ConcatMap
+  , f "subkeys" SubKeys
+  , f "trim" Trim
   ]
  where 
     f :: T.Text -> QBToken -> Lexer 
-    f str t = try $ lexStr_ str $> QBTok t 
+    f str t = lex . try $ lexStr_ str $> QBTok t 
 
-cTok :: Lexer 
-cTok 
-  = choice [
-    f "sk" SKRec
-  , f "nk" NKRec 
-  , f "vk" VKRec 
-  , f "skl" SKList 
-  , f "vl"  VList 
-  , f "val" Val 
-  ]
- where 
-   f :: T.Text -> CCTok -> Lexer 
-   f str t = lexStr_ str $> CTok t 

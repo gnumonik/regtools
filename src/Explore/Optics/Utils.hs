@@ -6,7 +6,6 @@ import Data.List
 isAsciiFlag :: Word32 -> Bool 
 isAsciiFlag x = x == 0x0020 
 
-type KeyPath = [String]
 toKeyPath :: String -> [String]
 toKeyPath = go ([],"") 
   where 

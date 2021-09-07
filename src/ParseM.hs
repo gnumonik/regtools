@@ -38,59 +38,14 @@ import Control.Concurrent.Async
 import Data.List (foldl')
 import Control.Monad (foldM)
 import Control.Monad.Look
-data ParseErr = ParseErr Word32 CCTok ErrorType deriving Show
 
-data ErrorType = CellTypeMismatch 
-               | SerializeError T.Text deriving Show 
-
-type ParseErrs = S.Seq ParseErr
-
-data ParseOutput a = ParseOutput Word32 Word32 a  
-
-{--
-Need a structure that records start and end points, and always overwrites (start,end) with 
-(start,end') when end' > end 
-
---}
-
-newtype OccupiedSpace = OccupiedSpace {getSpace :: M.Map Word32 Word32} deriving (Show, Eq)
 
 mapOS :: (M.Map Word32 Word32 -> M.Map Word32 Word32)
        -> OccupiedSpace -> OccupiedSpace
 mapOS f (OccupiedSpace m) = OccupiedSpace $ f m 
 
-
-
 unOut :: ParseOutput a -> a
 unOut (ParseOutput _ _ a) = a 
-
-instance Functor ParseOutput where 
-  fmap f (ParseOutput l s a) = ParseOutput l s (f a)
-
-deriving instance Show a => Show (ParseOutput a)
-
-type FunSet = (Word32 -> Bool)
-
-data RegEnv = RegEnv {_parsed       :: M.Map Word32 HiveCell
-                     ,_rawBS        :: BS.ByteString 
-                     ,_parseErrs    :: ParseErrs
-                     ,_offset       :: Word32 
-                     ,_spaceMap     :: OccupiedSpace}
-makeLenses ''RegEnv 
-
-type Driver = TVar RegEnv
-
-
-
-type ParseM = ErrorsT ParseErrs (ReaderT Driver IO)
-
-instance MonadLook Driver (ErrorsT ParseErrs (ReaderT Driver IO)) where 
-  look = unliftE ask 
-
-  looks f = f <$> (unliftE ask)
-
-exclude :: (Word32,Word32) -> (Word32 -> Bool) -> (Word32 -> Bool)
-exclude (start,len) old x = old x && not (x >= start && x <= start + len) 
 
 
 logSuccess :: forall a. IsCC a => ParseOutput a -> ReaderT Driver IO (ParseOutput a)

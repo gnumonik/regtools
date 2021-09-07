@@ -1,0 +1,44 @@
+Date : 2021-09-05 20:15:04
+Directory : /home/gsh/code/haskell/regtools/src
+Total : 18 files,  1841 codes, 129 comments, 417 blanks, all 2387 lines
+
+Languages
++----------+------------+------------+------------+------------+------------+
+| language | files      | code       | comment    | blank      | total      |
++----------+------------+------------+------------+------------+------------+
+| Haskell  |         18 |      1,841 |        129 |        417 |      2,387 |
++----------+------------+------------+------------+------------+------------+
+
+Directories
++---------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                          | files      | code       | comment    | blank      | total      |
++---------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                             |         18 |      1,841 |        129 |        417 |      2,387 |
+| Explore                                                       |         11 |      1,000 |         68 |        237 |      1,305 |
+| Explore/Optics                                                |          5 |        332 |         32 |         70 |        434 |
++---------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++---------------------------------------------------------------+----------+------------+------------+------------+------------+
+| filename                                                      | language | code       | comment    | blank      | total      |
++---------------------------------------------------------------+----------+------------+------------+------------+------------+
+| /home/gsh/code/haskell/regtools/src/Explore.hs                | Haskell  |         35 |          1 |         25 |         61 |
+| /home/gsh/code/haskell/regtools/src/Explore/EvalDSL.hs        | Haskell  |         49 |          0 |          9 |         58 |
+| /home/gsh/code/haskell/regtools/src/Explore/ExploreM.hs       | Haskell  |         72 |         24 |         24 |        120 |
+| /home/gsh/code/haskell/regtools/src/Explore/LexDSL.hs         | Haskell  |        117 |          1 |         26 |        144 |
+| /home/gsh/code/haskell/regtools/src/Explore/Magic.hs          | Haskell  |        208 |          7 |         60 |        275 |
+| /home/gsh/code/haskell/regtools/src/Explore/Optics/General.hs | Haskell  |         51 |          6 |         15 |         72 |
+| /home/gsh/code/haskell/regtools/src/Explore/Optics/NK.hs      | Haskell  |        147 |          9 |         29 |        185 |
+| /home/gsh/code/haskell/regtools/src/Explore/Optics/Root.hs    | Haskell  |         75 |         17 |         14 |        106 |
+| /home/gsh/code/haskell/regtools/src/Explore/Optics/Utils.hs   | Haskell  |         16 |          0 |          3 |         19 |
+| /home/gsh/code/haskell/regtools/src/Explore/Optics/VK.hs      | Haskell  |         43 |          0 |          9 |         52 |
+| /home/gsh/code/haskell/regtools/src/Explore/ParseDSLYO.hs     | Haskell  |        163 |          4 |         38 |        205 |
+| /home/gsh/code/haskell/regtools/src/Explore/Repl.hs           | Haskell  |         59 |          0 |         10 |         69 |
+| /home/gsh/code/haskell/regtools/src/Hash.hs                   | Haskell  |          1 |          1 |          1 |          3 |
+| /home/gsh/code/haskell/regtools/src/Lib.hs                    | Haskell  |        354 |          3 |         51 |        408 |
+| /home/gsh/code/haskell/regtools/src/ParseM.hs                 | Haskell  |        116 |         47 |         39 |        202 |
+| /home/gsh/code/haskell/regtools/src/Store.hs                  | Haskell  |          1 |          1 |          1 |          3 |
+| /home/gsh/code/haskell/regtools/src/Time.hs                   | Haskell  |         13 |          0 |          4 |         17 |
+| /home/gsh/code/haskell/regtools/src/Types.hs                  | Haskell  |        321 |          8 |         59 |        388 |
+| Total                                                         |          |      1,841 |        129 |        417 |      2,387 |
++---------------------------------------------------------------+----------+------------+------------+------------+------------+

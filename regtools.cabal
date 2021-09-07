@@ -25,12 +25,12 @@ source-repository head
 
 library
   exposed-modules:
-      Explore.ParseDSLYO
+      Explore.ParseDSL
       Lib
       Types
       ParseM
-      Explore
       Time
+
 
       Explore.Repl 
       Explore.EvalDSL 
@@ -77,6 +77,10 @@ library
     , megaparsec
     , haskeline 
     , optparse-applicative
+    , cryptohash-md5 
+    , aeson 
+    , pretty-simple 
+    , stringsearch
   default-language: Haskell2010
   default-extensions: 
       DataKinds

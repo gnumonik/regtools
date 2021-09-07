@@ -25,76 +25,8 @@ import Data.List (intercalate)
 import Data.ByteString.Char8 (unpack)
 
 
-makeLenses ''HiveData
-
-type Printer = String -> IO ()
-
--- | Type for query errors. Most of the time the Word32 argument will be '0' (in which case it should be ignore)
---   , but occasionally we can encode the location of the error. (Yes it'd be better if it were `Maybe Word32` but 
---   it's easier to adopt this convention and since we don't do anything stupendously important with the field it shouldn't matter)
-data QueryError = QueryError Word32 T.Text deriving Show 
-
--- | type QueryErrors = Data.Sequence.Seq QueryError 
-type QueryErrors = Seq.Seq QueryError 
-
--- | type ExploreM = ErrorsT QueryErrors (ReaderT HiveData IO)
---   The monad in which registry queries are run. ErrorsT wrapper around a (ReaderT HiveData IO) transformer stack 
-type ExploreM = ErrorsT QueryErrors (ReaderT (HiveData,Printer) IO) 
-
--- | As with other ErrorT stacks, local is either impossible or difficult to define; 
---   MonadLook is simply a cut-down version of MonadReader that only supports ask/asks 
-instance MonadLook HiveData ExploreM where 
-  look = unliftE ask >>= pure . view _1  
-
-  looks f = f <$> look 
-
 getPrinter :: ExploreM Printer 
 getPrinter = unliftE ask >>= pure . view _2 
-
--- | The "Queries" that we run are really 'MonadicFold's where the monad wrapping the fold is ExploreM 
-type MFold s a = MonadicFold ExploreM s a 
-
--- | The type of an entire well-constructed query. Admittedly this is a bit odd; Query a ~ MFold HiveData a, and our 
---   ExploreM monad wraps a ReaderT with a HiveData context. Doing it this way allows for greater parsimony in 
---   type signatures and makes the UX a bit more coherent though. (This library isn't targeted at experience Haskell devs.)
-type Query a = MFold HiveData a  
-
--- | Not sure if anything actually uses/needs to use this. Delete if not. 
-newtype NotFound = NotFound Word32 deriving (Show, Eq, Ord)
-
--- | Not sure if anything actually uses/needs to use this. Delete if not. 
-newtype WrongType = WrongType Word32 deriving (Show, Eq, Ord)
-
--- | Registry Key data type. This is a "thin" representation of a Registry Key, its values, and its subkeys. 
---   Generally, a query which is intended to be used by true end users (i.e. security professionals who aren't 
---   involved in byte-level registry forrensics) ought to return this. 
---   Also, this should have the Aeson instances (even if nothing else does)
-data RegistryKey  = RegistryKey {
-    _keyName    :: !BS.ByteString 
-  , _keyParents :: ![BS.ByteString]
-  , _keyTime    :: !UTCTime
-  , _keyValues  :: ![(BS.ByteString,Value) ]
-  , _subkeys    :: ![RegistryKey]
-} deriving (Show, Eq)
-
--- | Note to self, redo the Pretty class with one of the fancy pprint libs 
-instance Pretty RegistryKey where 
-  pretty (RegistryKey n p t v sks) = text  "| Key Name: " <+> pretty n
-                                <$$> text "| Path:" <+> formatPath p 
-                                <$$> text "| TimeStamp: " <+> pretty t 
-                                <$$> (text "| Values:" & (\x -> if null v then x <+> text "<NONE>" else  x <$$> (vcat $  formatVals v))) 
-                                <$$> (text "| Subkeys:" & (\x -> if null sks then x <+> text "<NONE>" else x <$$> indent 3 (vsep . map pretty $  sks))) 
-                                <$$> text "|------"
-    where 
-      formatPath :: [BS.ByteString] -> Doc 
-      formatPath bs = text . (<> "\\") . intercalate "\\" . map unpack  $ bs 
-
-      formatVals :: [(BS.ByteString,Value)] -> [Doc]
-      formatVals vs = flip map vs $ \(nm,vl) -> indent 2 (
-                text "|-----------"
-          <$$>  text "|- Value Name:" <+> pretty nm 
-          <$$>  text "|- Value Data:" <+> pretty vl )
-
 
 -- | Run a Query on the target HiveData. (Function is like this to support GHCI use)
 query :: (String -> IO ()) -> HiveData -> Query a -> IO (Either QueryErrors a)

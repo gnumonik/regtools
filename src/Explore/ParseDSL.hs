@@ -1,4 +1,4 @@
-module Explore.ParseDSLYO where 
+module Explore.ParseDSL where 
 
 import Prelude hiding (lex)
 import Text.Megaparsec
@@ -21,9 +21,9 @@ import Control.Monad.Reader
 import Control.Concurrent.STM
 import qualified Control.Monad.State.Strict as ST 
 import Data.Constraint
+import qualified Data.ByteString.Char8 as BC
 
-type Context = M.Map T.Text (SomeSing DSLType)
-
+-- | This is more or less our Type Checker 
 insertVar :: forall a. TypedVar (a :: DSLType) -> Context -> Either String Context 
 insertVar tv@(MkTypedVar txt) cxt = case M.lookup txt cxt of
   Nothing -> Right $ M.insert txt (SomeSing $ sing @a) cxt 
@@ -37,6 +37,7 @@ insertVar tv@(MkTypedVar txt) cxt = case M.lookup txt cxt of
                     <> " in the present context."
     Just Refl -> Right cxt 
 
+-- | Concrete implementation of the type checker in the parser monad 
 mkVar :: forall a. Sing (a :: DSLType) -> T.Text -> DSLParser (TypedVar a) 
 mkVar sA txt 
   = let tv = withSingI sA $ MkTypedVar @a txt
@@ -44,25 +45,7 @@ mkVar sA txt
       Left err -> fail err 
       Right cxt -> lift (ST.modify . const $ cxt) >> pure tv 
 
-
-data TypedVar :: DSLType -> Type where 
-  MkTypedVar :: SingI (a :: DSLType) => T.Text -> TypedVar a 
-
-data DSLExp :: DSLType -> Type where
-
-  QueryExp  :: Focus a -> DSLExp a
-
-  Assign    :: Focus a -> TypedVar a -> DSLExp a
-
-  -- commands/statements, but those are easy to add later 
-
-data Some :: (k -> Type) -> Type where 
-  Some :: forall k (a :: k) (c :: k -> Type)
-        . c a -> Some c  
-
-type DSLParser a = ParsecT Void [Tok] (ST.State Context) a  
-
-
+-- | Match a token, return ()
 tk :: Tok -> DSLParser ()
 tk t = void $ satisfy (== t) 
 
@@ -71,17 +54,13 @@ w32 = do
   IntLike n <- satisfy (\case {IntLike _ -> True ; _ -> False})
   pure . fromIntegral $ n 
 
-cctok :: DSLParser CCTok 
-cctok = do 
-  CTok c <- satisfy (\case {CTok _ -> True ; _ -> False})
-  pure c 
-
 dslExp :: DSLParser (Some DSLExp)
-dslExp = choice [assign, qExp]
+dslExp = choice [cmd,assign, qExp]
 
 assign :: DSLParser (Some DSLExp)
 assign = do 
   Name n <- satisfy (\case {Name _ -> True ; _ -> False})
+  tk LArrow
   qExp >>= \case 
     Some (QueryExp f) -> case focSing f of 
       sF -> do 
@@ -89,10 +68,20 @@ assign = do
         pure . Some $ Assign f (withSingI sF $ MkTypedVar n)
     _ -> fail "Assignment failure. This really really shouldn't happen."
 
--- this is only possible w/ singletons, ty dr. eisenberg 
+cmd :: DSLParser (Some DSLExp)
+cmd = choice [cmdExit
+             -- ,cmdHelp
+             -- ,cmdDeadSpace
+             ]
+ where 
+   cmdExit = do 
+     tk (CmdTok ExitTok)
+     pure . Some . Command $ EXIT 
+
+-- | this is only possible w/ singletons, ty dr. eisenberg 
 qExp :: DSLParser (Some DSLExp)
 qExp = do 
-  qbs <- {-- between (tk LParen) (tk RParen) --} (someQB `sepBy` tk Pipe)
+  qbs <- someQB `sepBy1` tk Pipe
   case composeQExp qbs of 
     Left err -> fail err 
     Right (Some f)  -> pure . Some . QueryExp $ f 
@@ -114,74 +103,85 @@ qExp = do
 -- if something breaks its probably because i have/don't have 'try' somewhere here 
 someQB :: DSLParser SomeQB
 someQB = choice [
-        someRegItem 
-      , someRootCell 
+        someRootCell 
       , someKeyPath 
-      , someGetVal 
-      , someStblSubkeys 
-      , someVolSubkeys 
-      , someAllSubkeys 
-      , someVKRecs 
-      , someKeyValues 
-      , someAllKVs
+      , someSubkeys 
       , somePPrint
-  --  , someFindCell
+      , someWriteJSON
+      , someMatchName
+      , someMatchValName 
+      , someMatchValData 
+      , someMap 
+      , someSelect 
+      , someConcatMap 
+      , someTrim
   ]
  where
-
-    someGetVal :: DSLParser SomeQB 
-    someGetVal = do 
-      tk (QBTok GetVal)
-      pure . SomeQB $  GETVAL
-
-    someStblSubkeys :: DSLParser SomeQB 
-    someStblSubkeys = do 
-      tk (QBTok StblSubkeys)
-      pure . SomeQB $ STBLSUBKEYS 
-
-    someVolSubkeys :: DSLParser SomeQB 
-    someVolSubkeys = do 
-      tk (QBTok VolSubkeys)
-      pure . SomeQB $ VOLSUBKEYS 
-
-    someAllSubkeys :: DSLParser SomeQB 
-    someAllSubkeys = do 
-      tk (QBTok AllSubkeys)
-      pure . SomeQB $ ALLSUBKEYS 
-
-    someVKRecs :: DSLParser SomeQB 
-    someVKRecs = do 
-      tk (QBTok VKRecs)
-      pure . SomeQB $ VKRECS 
-
-    someKeyValues :: DSLParser SomeQB 
-    someKeyValues = do 
-      tk (QBTok KeyValues)
+    someTrim :: DSLParser SomeQB 
+    someTrim = do 
+      tk (QBTok Trim)
       w <- w32 
-      pure . SomeQB $ KEYVALUES w 
+      pure . SomeQB $ TRIM w 
 
-    someAllKVs :: DSLParser SomeQB
-    someAllKVs = do 
-      tk (QBTok AllKVs)
-      pure . SomeQB $ ALLKVS   
+    someMatchName :: DSLParser SomeQB 
+    someMatchName = do 
+      tk (QBTok MatchName)
+      LitString n <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+      let n' = BC.pack (T.unpack n) 
+      pure . SomeQB $ MATCHKEYNAME n' 
+
+    someMatchValName :: DSLParser SomeQB 
+    someMatchValName = do 
+      tk (QBTok MatchValName) 
+      LitString n <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+      let n' = BC.pack (T.unpack n)
+      pure . SomeQB $ MATCHVALNAME n' 
+
+    someMatchValData :: DSLParser SomeQB
+    someMatchValData = do 
+      tk (QBTok MatchValData)
+      LitString n1 <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+      LitString n2 <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+      let (n1',n2') = (BC.pack . T.unpack $ n1, BC.pack . T.unpack $ n2)
+      pure . SomeQB $ MATCHVALDATA n1' n2' 
+
+    someMap :: DSLParser SomeQB 
+    someMap = do 
+      tk (QBTok Map)
+      SomeQB qb <- between (tk LParen) (tk RParen) someQB 
+      case (qbDict1 qb, qbDict qb) of 
+        (Just d,Dict) -> withDict d $ pure . SomeQB $ MAP qb
+        _             -> fail "Type mismatch in `map` function"
+
+    someSelect :: DSLParser SomeQB 
+    someSelect = do 
+      tk (QBTok Select)
+      SomeQB qb <- between (tk LParen) (tk RParen) someQB 
+      case qbDict1 qb of 
+        Just d -> case qbSing qb of 
+          (_,SBOOL) -> withDict d $ pure . SomeQB $ SELECT qb 
+          _ -> fail "Type mismatch in `select` function"
+        Nothing -> fail "Type mismatch in `select` function"
+
+    someConcatMap :: DSLParser SomeQB 
+    someConcatMap = do 
+      tk (QBTok ConcatMap)
+      SomeQB qb <- between (tk LParen) (tk RParen) someQB 
+      case qbDict1 qb of 
+        Just d -> case qbSing qb of 
+          (_,SLIST x) ->  pure . SomeQB $ withDict d $ withDict (qbDict qb) $ CONCATMAP qb 
+          _ -> fail "Type mismatch in `concatMap` function"
+        _ -> fail "Type mismatch in `concatMap` function"
+
+    someSubkeys :: DSLParser SomeQB 
+    someSubkeys = do 
+      tk (QBTok SubKeys)
+      pure . SomeQB $ SUBKEYS 
 
     somePPrint :: DSLParser SomeQB 
     somePPrint = do 
       tk (QBTok PPrint)
       pure . SomeQB $ PPRINT 
-
-    someRegItem :: DSLParser SomeQB 
-    someRegItem = do 
-      tk (QBTok RegItem) 
-      w <- w32 
-      c <- cctok 
-      case toSing c of 
-        SomeSing SSKRec  -> pure . SomeQB $ REGITEM w SSKRec 
-        SomeSing SNKRec  -> pure . SomeQB $ REGITEM w SNKRec 
-        SomeSing SVKRec  -> pure . SomeQB $ REGITEM w SVKRec 
-        SomeSing SSKList -> pure . SomeQB $ REGITEM w SSKList 
-        SomeSing SVList  -> pure . SomeQB $ REGITEM w SVList 
-        SomeSing SVal    -> pure . SomeQB $ REGITEM w SVal 
 
     someRootCell :: DSLParser SomeQB 
     someRootCell = do 
@@ -195,8 +195,12 @@ someQB = choice [
       let kPath' =  toKeyPath . T.unpack $ kPath 
       pure . SomeQB $ KEYPATH kPath' 
 
-    someFindCell :: DSLParser SomeQB 
-    someFindCell = undefined -- need to work out predicates  
+
+    someWriteJSON :: DSLParser SomeQB 
+    someWriteJSON = do 
+      tk (QBTok WriteJSON)
+      LitString fPath <- satisfy (\case {LitString _ -> True ; _ -> False})
+      pure . SomeQB $ WRITEJSON (T.unpack fPath) 
 
 
     

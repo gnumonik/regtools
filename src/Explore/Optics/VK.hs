@@ -16,8 +16,6 @@ import qualified Data.Text as T
 import Data.Serialize
 import Debug.Trace
 
-
-
 val :: MFold VKRecord Value
 val  = mkMonadicFold go 
   where 
@@ -36,17 +34,3 @@ val  = mkMonadicFold go
                             $ QueryError 0 (T.pack $ "Error reading truncated value from VK data pointer field: " <> err)
                   Right v  -> pure v 
 
-namedVal :: MFold VKRecord [(BS.ByteString,Value)]
-namedVal = mkMonadicFold go 
-  where 
-    go :: VKRecord -> ExploreM [(BS.ByteString,Value)]
-    go vk = let valNm = vk ^. valName
-            in if checkVKPointer (vk ^. dataLength)
-            then look >>= \hData -> 
-              hData ^!? regItem @Value (vk ^. dataPtr) >>= \case 
-                Nothing -> pure []
-                Just vx -> pure [(valNm,vx)] 
-
-            else case runGet (valueData 4 (vk ^. valueType)) (runPut . putWord32le $ vk ^. dataPtr) of 
-                  Left err -> trace err $ pure []
-                  Right v  -> pure [(valNm,v)]

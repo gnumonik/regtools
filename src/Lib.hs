@@ -39,15 +39,7 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 checkVKPointer :: Word32 -> Bool 
 checkVKPointer w = w .&. 0b10000000000000000000000000000000 /= 0b10000000000000000000000000000000 
 
-data HiveData = HiveData {_rHeader :: RegistryHeader 
-                         ,_hHeader :: HiveBinHeader 
-                         ,_hEnv    :: RegEnv} 
-instance Pretty HiveData where 
-  pretty (HiveData rH hH hEnv) 
-    =       pretty rH
-      <$$>  pretty hH 
-      <$$>  text "Hive Data Size (bytes):" <+> (text . show . BS.length $ _rawBS hEnv)
-      <$$>  text "Number of Cells:" <+> (text . show . M.size $ _parsed hEnv)
+
                                
 
 peek :: (Word32 -> Word32) -> Word32 -> IO ()
@@ -103,7 +95,7 @@ peekTest w1 w2 = do
    format :: BS.ByteString -> String 
    format bs = snd $ foldl' (\(n,acc) x -> (n+1,acc <> "\n" <> show n <> ": " <> show x <> "\n")) (w1,"") bs 
 
-type Offset = Word32 
+
 
 peekRange :: BS.ByteString -> Word32 -> Word32 ->  IO (Either ParseErrs BS.ByteString)
 peekRange bs w1 w2 = case initE bs of 
@@ -124,7 +116,7 @@ registry bs = case initE bs of
         let reg = Registry rH (V.singleton $ HiveBin hH (V.singleton $ HiveCell s $ NK nk))
         pure . Right $ (rH,hH,tvar)
 
-type Vec = V.Vector 
+
 
 initE :: BS.ByteString -> Either String (RegistryHeader, HiveBinHeader, RegEnv) 
 initE bs = case runGetPartial mkChunks' bs of 
