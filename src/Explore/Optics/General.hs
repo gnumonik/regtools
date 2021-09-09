@@ -11,7 +11,8 @@ organized by their "input". I.e. a MFold NKRecord a would be in `NK.hs`
 --}
 
 
-import Control.Lens 
+import Control.Lens
+    ( Identity(Identity), (^.), (^?), folding, to, Fold, Getter ) 
 import Types
 import Explore.ExploreM
 import Control.Monad.IO.Class
@@ -21,11 +22,15 @@ import Data.Maybe
 import Control.Lens.Action
 import Text.PrettyPrint.Leijen hiding ((<$>))
 import qualified Data.Aeson as A 
+import Data.Aeson ((.=))
 import Text.Pretty.Simple (pShow)
 import qualified Data.Text.Lazy as T
 import qualified Data.ByteString.Search as Search 
 import qualified Data.ByteString as BS
 import Control.Monad (foldM)
+import qualified Data.Text as TS 
+import Hash
+
 
 takin' :: Int -> Fold [a] [a]
 takin' n = folding (Identity . take n)
@@ -42,14 +47,41 @@ pPrint = mkMonadicFold $ \p ->
            $ p 
 
 -- | Writes JSON to a file. NOTE: DOES NOT APPEND!
-writeJSON :: forall a. A.ToJSON a => FilePath -> MFold a ()
-writeJSON fPath = mkMonadicFold go 
+writeJSON :: forall a
+           . A.ToJSON a 
+          => FilePath 
+          -> Maybe TS.Text -- optional tag for the JSON object 
+          -> MFold a ()
+writeJSON fPath mstr = mkMonadicFold go 
   where 
     go :: a -> ExploreM () 
     go a = do 
       f <- getPrinter 
-      liftIO $ f (T.unpack . pShow $ A.toJSON a)
-      liftIO $ A.encodeFile fPath a 
+      let js = case mstr of 
+                Nothing  -> A.toJSON a 
+                Just txt -> A.object [txt .= a] 
+      liftIO $ f (T.unpack . pShow $ js)
+      liftIO $ A.encodeFile fPath js  
+
+hashOneKey :: FilePath -> MFold RegistryKey ()
+hashOneKey fPath = mkMonadicFold go 
+  where 
+    go :: RegistryKey -> ExploreM ()
+    go rKey = do
+      f <- getPrinter  
+      let hashed = OneKey $ hashKey rKey 
+      liftIO . f . T.unpack . pShow $ hashed 
+      liftIO $ A.encodeFile fPath hashed 
+
+hashManyKeys :: FilePath -> MFold [RegistryKey] () 
+hashManyKeys fPath = mkMonadicFold go 
+  where 
+    go :: [RegistryKey] -> ExploreM ()
+    go rKeys = do 
+      f <- getPrinter 
+      let hashed = ManyKeys $ map hashKey rKeys
+      liftIO . f . T.unpack . pShow $ hashed 
+      liftIO $ A.encodeFile fPath hashed  
 
 -- | Fold from a cell to its content. Requires a type application.
 content :: forall a. IsCC a => Fold HiveCell a 

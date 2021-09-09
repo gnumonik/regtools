@@ -22,7 +22,23 @@ import qualified Data.Sequence as S
 
 -- A bunch of these are written in a somewhat roundabout manner to improve the UX. 
 -- (If you're familiar with Control.Lens these probably don't look like most of the other Folds 
--- you've seen, even sand the monadic effects)
+-- you've seen, even sans the monadic effects)
+
+
+
+mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
+mkRKey hData nk = do 
+      let keyStr = nk ^. keyString 
+      let timeStamp = nk ^. nkTimeStamp
+      let parentPath = hData ^. (getParentPath nk)
+      myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
+      case parentPath of 
+          [] -> pure $ 
+            RegistryKey "<$ROOT$>" [] timeStamp (NamedVals myVals) Truncated nk 
+
+          _  -> pure $ 
+            RegistryKey keyStr parentPath timeStamp (NamedVals myVals) Truncated nk
+
 
 -- | Requires a type application.
 regItem :: forall a. IsCC a => Word32 -> Query a 
@@ -33,6 +49,11 @@ regItem w = mkMonadicFold go
       Nothing -> qErr $ QueryError w "RegItem lookup failed. Target doesn't exist or is wrong type."
       Just a  -> pure a 
 
+namedVals :: MFold RegistryKey [NamedVal]
+namedVals = mkMonadicFold go 
+  where 
+    go :: RegistryKey -> ExploreM [NamedVal] 
+    go rKey = pure . getNamedVals $ rKey ^. keyValues 
 -- | Gets the root cell of the registry. 
 rootCell :: Query RegistryKey 
 rootCell = mkMonadicFold go 
@@ -45,31 +66,23 @@ rootCell = mkMonadicFold go
         Nothing -> report . S.singleton $ QueryError 0 "Error: Root Cell Not Found"
         Just aNK -> mkRKey hData aNK 
 
-    mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
-    mkRKey hData nk = do 
-          let keyStr = nk ^. keyString 
-          let timeStamp = nk ^. nkTimeStamp
-          let parentPath = hData ^. (getParentPath nk) 
-          myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
-          pure $ RegistryKey keyStr parentPath timeStamp myVals Truncated nk
-
-namedVal :: MFold VKRecord [(BS.ByteString,Value)]
+namedVal :: MFold VKRecord [NamedVal] 
 namedVal = mkMonadicFold go 
   where 
-    go :: VKRecord -> ExploreM [(BS.ByteString,Value)]
+    go :: VKRecord -> ExploreM [NamedVal]
     go vk = let valNm = vk ^. valName
             in if checkVKPointer (vk ^. dataLength)
             then look >>= \hData -> 
               hData ^!? regItem @Value (vk ^. dataPtr) >>= \case 
-                Nothing -> pure []
-                Just vx -> pure [(valNm,vx)] 
+                Nothing -> pure  $ []
+                Just vx -> pure  $ map NamedVal [(valNm,vx)] 
 
             else case runGet (valueData 4 (vk ^. valueType)) (runPut . putWord32le $ vk ^. dataPtr) of 
                   Left err -> do 
                     printer <- getPrinter 
                     liftIO $ printer err
-                    pure []
-                  Right v  -> pure [(valNm,v)]
+                    pure $ []
+                  Right v  -> pure  $ map NamedVal [(valNm,v)]
                   
 getParentPath :: NKRecord -> Getter HiveData [BS.ByteString] 
 getParentPath nk = to runPath  

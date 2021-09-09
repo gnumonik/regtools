@@ -40,14 +40,33 @@ dsltoks = choice [
   , try litString
   , name ]
 
+pluginToks :: Lexer 
+pluginToks = choice [
+    try query 
+  , try intLike 
+  , try qbTok 
+  , try cmdTok
+  , pipe
+  , lArrow 
+  , lParen 
+  , rParen
+  , lCurly 
+  , rCurly 
+  , plugin 
+  , as 
+  , fPathVar
+  , try litString
+  , name ]
+
 testLex :: T.Text -> IO ()
 testLex = parseTest (some dsltoks) 
 
 cmdTok :: Lexer 
 cmdTok = choice [
-    f ":help" HelpTok 
-  , f ":deadSpace" DeadSpaceTok 
-  , f ":exit" ExitTok 
+    f "help" HelpTok 
+  , f "exit" ExitTok
+  , f "load" LoadTok
+  , f "run"  RunTok 
   ]
  where 
     f :: T.Text -> CmdToken -> Lexer 
@@ -74,7 +93,6 @@ lexStr_ str = void . lex $ go
         Nothing -> pure ()
         Just _  -> fail "boom"
 
-
 lexChar_ :: (MonadParsec e s f, Token s ~ Char) => Char -> f ()
 lexChar_ c = void . lex $ char c 
 
@@ -85,7 +103,11 @@ lArrow :: Lexer
 lArrow = lexStr_ "<-" $> LArrow 
 
 pipe :: Lexer 
-pipe = lexChar_ '|' $> Pipe 
+pipe = choice [try pipe2, pipe1]
+  where 
+    pipe2 = lexStr_ ">>>" $> Pipe 
+
+    pipe1 = lexChar_ '|' $> Pipe 
 
 lParen :: Lexer 
 lParen = lexChar_ '(' $> LParen 
@@ -96,21 +118,38 @@ rParen = lexChar_ ')' $> RParen
 intLike :: Lexer 
 intLike = lex $ IntLike . fromIntegral <$> decimal 
 
+lCurly = lexChar_ '{' $> LCurly 
+
+rCurly = lexChar_ '}' $> RCurly 
+
+plugin = lexStr_ "PLUGIN" $> Plugin 
+
+fPathVar = lexStr_ "$FILEPATH$" $> FPathVar 
+
+
+
+as = lexStr_ "AS" $> As 
+
 qbTok :: Lexer 
 qbTok 
   = choice [
-    f "root" RootCell
+    f "root" Root
   , f "key" KeyPath
   , f "print" PPrint 
   , f "writeJSON" WriteJSON
-  , f "keyName" MatchName 
-  , f "valName" MatchValName
-  , f "valData" MatchValData 
+  , f "keyNameHas" MatchName 
+  , f "valNameHas" MatchValName
+  , f "valDataHas" MatchValData 
   , f "map" Map 
   , f "select" Select 
   , f "concatMap" ConcatMap
   , f "subkeys" SubKeys
-  , f "trim" Trim
+  , f "expand" Expand
+  , f "hashKey" HashKey 
+  , f "hashKeys" HashKeys
+  , f "filterValues" FilterValues 
+  , f "filterSubkeys" FilterSubkeys 
+  , f "values" Vals 
   ]
  where 
     f :: T.Text -> QBToken -> Lexer 

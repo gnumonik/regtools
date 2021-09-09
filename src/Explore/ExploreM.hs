@@ -36,6 +36,13 @@ query printer reg l  =
     Right Nothing -> pure . Left . Seq.singleton $! QueryError 0 "Query failed to match any targets"
     Right (Just !a) -> pure . Right $! a 
 
+query' :: (String -> IO ()) -> HiveData -> a -> MFold a b -> IO (Either QueryErrors b)
+query' printer reg v l = 
+  runReaderT (runE $! v ^!? l) (reg,printer) >>= \case 
+    Left !errs ->  pure . Left $! errs 
+    Right Nothing -> pure . Left . Seq.singleton $! QueryError 0 "Query failed to match any targets"
+    Right (Just !a) -> pure . Right $! a 
+
 -- | Makes a monadic fold. I spent a while confused by the fact that Control.Lens.Action doesn't 
 --   have an equivalent of 'folding' from Control.Lens. It turns out that MonadicFolds and monadic getters 
 --   have the same type modulo (iirc) an applicative constraint for Folds, so this should work

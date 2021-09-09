@@ -7,7 +7,7 @@ import Types
 import Lib
 import qualified Data.Vector as V
 import Data.Word (Word32)
-import Control.Lens ( (^?), (^.), to )
+import Control.Lens ( (^?), (^.), to, set )
 import Explore.Optics.Root
 import Explore.Optics.General
 import Control.Monad.Look
@@ -22,6 +22,10 @@ import qualified Data.ByteString.Char8 as BC
 import Control.Monad
 import Control.Lens.Getter (Getter)
 import qualified Data.List.NonEmpty as NE
+import Explore.Optics.Utils
+import Control.Monad.IO.Class
+import Hash (hashKey)
+import qualified Data.List.NonEmpty as NE 
 
 stblSubkeys :: MFold RegistryKey [RegistryKey]
 stblSubkeys = mkMonadicFold go 
@@ -42,14 +46,6 @@ stblSubkeys = mkMonadicFold go
                  rKey <- mkRKey hData nk 
                  pure $ (rKey : acc)  
       where 
-        mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
-        mkRKey hData nk = do 
-          let keyStr = nk ^. keyString 
-          let timeStamp = nk ^. nkTimeStamp
-          let parentPath = hData ^. (getParentPath nk) 
-          myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
-          pure $ RegistryKey keyStr parentPath timeStamp myVals Truncated nk
-
     go :: RegistryKey -> ExploreM [RegistryKey]
     go (RegistryKey kn kp kt kv sks nk) = if ok 
             then look >>= \hData -> case hData ^? (hiveCell stblPtr . content @SubkeyList) of   
@@ -79,14 +75,6 @@ volSubkeys = mkMonadicFold go
                Just nk -> do 
                  rKey <- mkRKey hData nk 
                  pure $ (rKey : acc)  
-      where 
-        mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
-        mkRKey hData nk = do 
-          let keyStr = nk ^. keyString 
-          let timeStamp = nk ^. nkTimeStamp
-          let parentPath = hData ^. (getParentPath nk) 
-          myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
-          pure $ RegistryKey keyStr parentPath timeStamp myVals Truncated nk
 
     go :: RegistryKey -> ExploreM [RegistryKey]
     go (RegistryKey kn kp kt kv sks nk) = if ok 
@@ -131,7 +119,7 @@ kvs depth = mkMonadicFold runKVs
       let timeStamp = nk ^. nkTimeStamp 
       myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
       children <- getChildren (keyStr:acc) (d+1) rKey 
-      pure $ RegistryKey keyStr (reverse acc) timeStamp myVals children nk
+      pure $ RegistryKey keyStr (reverse acc) timeStamp (NamedVals myVals) children nk
 
     getChildren :: [BS.ByteString] -> Depth -> RegistryKey -> ExploreM SubkeyData
     getChildren acc d nk 
@@ -160,11 +148,16 @@ keyPath kpath = mkMonadicFold (runKeyPath kpath)
   where 
     runKeyPath :: [String] -> HiveData -> ExploreM RegistryKey
     runKeyPath [] _ = qErr $ QueryError 0 "Error: Empty key path"
-    runKeyPath xs hData = hData ^!? rootCell >>= \case 
-      Nothing -> qErr $ QueryError 0 "Error: Root cell not found in Key Path lookup query" 
-      Just root -> do 
-        rKey <- mkRKey hData (root ^. keyNode) 
-        go rKey xs 
+    runKeyPath xs@(z:zs) hData
+      | z == rootPath && not (null zs) = runKeyPath zs hData 
+      | z == rootPath && null zs = hData ^!? rootCell >>= \case 
+          Nothing -> qErr $ QueryError 0 "Error: Root cell not found in Key Path lookup query" 
+          Just root -> pure root 
+      | otherwise = hData ^!? rootCell >>= \case 
+          Nothing -> qErr $ QueryError 0 "Error: Root cell not found in Key Path lookup query" 
+          Just root -> do 
+            rKey <- mkRKey hData (root ^. keyNode) 
+            go rKey xs 
 
     go :: RegistryKey -> [String] -> ExploreM RegistryKey
     go rk []       = pure rk 
@@ -173,13 +166,59 @@ keyPath kpath = mkMonadicFold (runKeyPath kpath)
           Just nextNK -> go nextNK kps 
           Nothing -> qErr . QueryError 0 $ T.pack ("The key: " <> kp <> " was not found in the volatile or stable subkeylist of its designated parent")
 
-    mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
-    mkRKey hData nk = do 
-          let keyStr = nk ^. keyString 
-          let timeStamp = nk ^. nkTimeStamp
-          let parentPath = hData ^. (getParentPath nk) 
-          myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
-          pure $ RegistryKey keyStr parentPath timeStamp myVals Truncated nk
+checkHash :: KeyHash ->  ExploreM ()
+checkHash kHash  = do
+  hData <- look 
+  f <- getPrinter   
+  let kPath = toKeyPath . T.unpack $ kName 
+  hData ^!? keyPath kPath >>= \case 
+    Nothing -> liftIO . f $ "The Key @" <> show kPath <> " cannot be found in the Registry"
+    Just rKey -> do 
+      let kHash' = hashKey rKey
+      if kHash == kHash' 
+        then pure ()
+        else liftIO $ diffHash f kHash kHash'  
+ where 
+   kName = kHash ^. fqKeyName
+   diffHash :: (String -> IO ()) -> KeyHash -> KeyHash -> IO ()
+   diffHash f k1 k2 = diffTime >> diffVals 
+    where 
+      diffTime = if (k1 ^. timeHash) /= (k2 ^. timeHash)
+                 then liftIO . f . T.unpack $ kName <> " - " <> "TimeStamp changed"
+                 else pure ()  
+      diffVals = if (k1 ^. valuesHash) /= (k2 ^. valuesHash)
+                 then liftIO . f . T.unpack $ kName <> " - " <> "Values changed"
+                 else pure ()
+
+mkSubKeys :: [RegistryKey] -> SubkeyData 
+mkSubKeys rks = case NE.nonEmpty rks of 
+  Nothing -> Empty 
+  Just ne -> Subkeys ne 
+
+filterSubkeys :: MFold RegistryKey Bool -> MFold RegistryKey RegistryKey 
+filterSubkeys p = mkMonadicFold go 
+  where 
+    go :: RegistryKey -> ExploreM RegistryKey 
+    go rKey = do 
+      rKey ^!? allSubkeys >>= \case 
+        Nothing -> pure rKey 
+        Just sks -> do 
+          sks' <- catMaybes <$> mapM (\x -> x ^!? p >>= \case {Just True -> pure $ Just x ; _ -> pure Nothing}) sks 
+          pure $ set subkeys (mkSubKeys sks) rKey  
+
+filterValues :: MFold NamedVal Bool -> MFold RegistryKey RegistryKey 
+filterValues p = mkMonadicFold go 
+  where 
+    go :: RegistryKey -> ExploreM RegistryKey 
+    go rKey = do 
+      let vals = getNamedVals $ rKey ^. keyValues
+      newVals <- NamedVals 
+                 . catMaybes 
+                <$> forM vals (\x -> x ^!? p >>= \case 
+                                  Just True -> pure $ Just x
+                                  _ -> pure Nothing)
+      pure $ set keyValues newVals rKey   
+      
           
 matchKeyName :: BS.ByteString -> MFold [RegistryKey] [RegistryKey]
 matchKeyName bs = select (nameContains bs)
@@ -187,13 +226,12 @@ matchKeyName bs = select (nameContains bs)
 nameContains :: BS.ByteString -> RegistryKey -> Bool 
 nameContains bs rk = containsSubstring bs (_keyNode rk ^. keyString)
 
-valNameContains :: BS.ByteString -> RegistryKey -> Bool 
-valNameContains bs rKey = or $ map (containsSubstring bs . fst) (rKey ^. keyValues)
+valNameContains :: BS.ByteString -> NamedVal -> Bool 
+valNameContains bs (NamedVal (nm,vl))= containsSubstring bs nm 
 
-valDataContains :: BS.ByteString -> BS.ByteString -> RegistryKey -> Bool 
-valDataContains nmStr dataStr rKey 
-  = let matchNm = filter (containsSubstring nmStr . fst) (rKey ^. keyValues)
-    in not . null $ filter (go . snd) matchNm  
+valDataContains :: BS.ByteString -> NamedVal -> Bool 
+valDataContains dataStr (NamedVal (nm,vl))
+  = go vl
  where 
     go :: Value -> Bool
     go = \case 
