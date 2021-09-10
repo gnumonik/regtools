@@ -49,39 +49,25 @@ pPrint = mkMonadicFold $ \p ->
 -- | Writes JSON to a file. NOTE: DOES NOT APPEND!
 writeJSON :: forall a
            . A.ToJSON a 
-          => FilePath 
+          => Printer
+          -> FilePath 
           -> Maybe TS.Text -- optional tag for the JSON object 
-          -> MFold a ()
-writeJSON fPath mstr = mkMonadicFold go 
-  where 
-    go :: a -> ExploreM () 
-    go a = do 
+          -> a 
+          -> ExploreM ()
+writeJSON f fPath mstr a =  do 
       f <- getPrinter 
       let js = case mstr of 
-                Nothing  -> A.toJSON a 
-                Just txt -> A.object [txt .= a] 
+                  Nothing  -> A.toJSON a 
+                  Just txt -> A.object [txt .= a] 
       liftIO $ f (T.unpack . pShow $ js)
       liftIO $ A.encodeFile fPath js  
 
-hashOneKey :: FilePath -> MFold RegistryKey ()
-hashOneKey fPath = mkMonadicFold go 
-  where 
-    go :: RegistryKey -> ExploreM ()
-    go rKey = do
+writeHash :: forall a. DSLHashable a => FilePath -> DSLToHask a -> ExploreM ()
+writeHash fPath a =  do
       f <- getPrinter  
-      let hashed = OneKey $ hashKey rKey 
+      let hashed = mkHash @a a  
       liftIO . f . T.unpack . pShow $ hashed 
       liftIO $ A.encodeFile fPath hashed 
-
-hashManyKeys :: FilePath -> MFold [RegistryKey] () 
-hashManyKeys fPath = mkMonadicFold go 
-  where 
-    go :: [RegistryKey] -> ExploreM ()
-    go rKeys = do 
-      f <- getPrinter 
-      let hashed = ManyKeys $ map hashKey rKeys
-      liftIO . f . T.unpack . pShow $ hashed 
-      liftIO $ A.encodeFile fPath hashed  
 
 -- | Fold from a cell to its content. Requires a type application.
 content :: forall a. IsCC a => Fold HiveCell a 

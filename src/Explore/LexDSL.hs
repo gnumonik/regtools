@@ -22,26 +22,16 @@ import Data.Kind (Type)
 import Data.Singletons (SingI (sing), SomeSing (SomeSing), SingKind (toSing), withSingI)
 import Data.Void (Void)
 
+{-- Lexer. Before parsing the DSL, we first convert it to a list of tokens. --}
+
 sc :: (MonadParsec e s f, Token s ~ Char) => f ()
 sc = void $ many spaceChar 
 
 lex = lexeme sc 
 
-dsltoks :: Lexer 
-dsltoks = choice [
-    try query 
-  , try intLike 
-  , try qbTok 
-  , try cmdTok
-  , pipe
-  , lArrow 
-  , lParen 
-  , rParen 
-  , try litString
-  , name ]
 
-pluginToks :: Lexer 
-pluginToks = choice [
+dslToks :: Lexer 
+dslToks = choice [
     try query 
   , try intLike 
   , try qbTok 
@@ -53,13 +43,17 @@ pluginToks = choice [
   , lCurly 
   , rCurly 
   , plugin 
-  , as 
-  , fPathVar
+  , if_ 
+  , then_ 
+  , else_ 
+  , append_ 
+  , concat_ 
+  , isempty_
   , try litString
   , name ]
 
 testLex :: T.Text -> IO ()
-testLex = parseTest (some dsltoks) 
+testLex = parseTest (some dslToks) 
 
 cmdTok :: Lexer 
 cmdTok = choice [
@@ -67,10 +61,15 @@ cmdTok = choice [
   , f "exit" ExitTok
   , f "load" LoadTok
   , f "run"  RunTok 
+  , f "writeJSON" WriteJSONTok 
+  , f "print" PrintTok 
+  , f "writeHash" WriteHashTok
+  , f "showType" ShowTypeTok
   ]
  where 
     f :: T.Text -> CmdToken -> Lexer 
     f str t = lex . try $ lexStr_ str $> CmdTok t 
+
 name :: Lexer 
 name = lex $ do 
   first <- lowerChar 
@@ -109,6 +108,18 @@ pipe = choice [try pipe2, pipe1]
 
     pipe1 = lexChar_ '|' $> Pipe 
 
+append_ = lexStr_ "append" $> AppendTok 
+
+concat_ = lexStr_ "concat" $> ConcatTok 
+
+isempty_ = lexStr_ "isEmpty" $> IsEmptyTok 
+
+if_ = lexStr_ "if" $> If 
+
+then_ = lexStr_ "then" $> Then 
+
+else_ = lexStr_ "else" $> Else  
+
 lParen :: Lexer 
 lParen = lexChar_ '(' $> LParen 
 
@@ -118,25 +129,19 @@ rParen = lexChar_ ')' $> RParen
 intLike :: Lexer 
 intLike = lex $ IntLike . fromIntegral <$> decimal 
 
+lCurly :: Lexer 
 lCurly = lexChar_ '{' $> LCurly 
 
+rCurly :: Lexer 
 rCurly = lexChar_ '}' $> RCurly 
 
 plugin = lexStr_ "PLUGIN" $> Plugin 
-
-fPathVar = lexStr_ "$FILEPATH$" $> FPathVar 
-
-
-
-as = lexStr_ "AS" $> As 
 
 qbTok :: Lexer 
 qbTok 
   = choice [
     f "root" Root
   , f "key" KeyPath
-  , f "print" PPrint 
-  , f "writeJSON" WriteJSON
   , f "keyNameHas" MatchName 
   , f "valNameHas" MatchValName
   , f "valDataHas" MatchValData 
@@ -145,10 +150,6 @@ qbTok
   , f "concatMap" ConcatMap
   , f "subkeys" SubKeys
   , f "expand" Expand
-  , f "hashKey" HashKey 
-  , f "hashKeys" HashKeys
-  , f "filterValues" FilterValues 
-  , f "filterSubkeys" FilterSubkeys 
   , f "values" Vals 
   ]
  where 

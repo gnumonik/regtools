@@ -15,7 +15,22 @@ import Explore.Optics.General
 import Unsafe.Coerce 
 import Text.PrettyPrint.Leijen (Pretty(..))
 import Control.Lens (folding, to, (^?))
+import Hash 
 
+-- orphan instances. its either put them here or put a bunch of functions into Types 
+
+instance DSLHashable 'REGKEY where 
+  mkHash = OneKey . hashKey 
+
+instance DSLHashable ('LIST 'REGKEY) where 
+  mkHash = ManyKeys . map hashKey 
+
+instance DSLHashable ('LIST 'VAL) where 
+  mkHash = ManyVals . map hashVal 
+
+tvSing :: forall a. TypedVar a -> Sing a 
+tvSing (MkTypedVar txt) = sing @ a 
+  
 typeDict :: forall a. TypeDict a -> Dict (PrettyRefl a)
 typeDict (MkTypeDict x) = Dict  
 
@@ -38,62 +53,23 @@ cqbDict = \case
 -- | Generates a PrettyRefl Dict for the second argument type to a 
 --   query builder. 
 qbDict :: forall a b. QueryBuilder a b -> Dict (PrettyRefl b)
-qbDict = \case
-  VALS              -> Dict 
-  FILTERVALUES _    -> Dict
-  FILTERSUBKEYS _   -> Dict  
-  ROOTCELL          -> Dict 
-  SUBKEYS           -> Dict 
-  KEYPATH   _       -> Dict 
-  PPRINT            -> Dict 
-  WRITEJSON _ _     -> Dict
-  MATCHKEYNAME _    -> Dict 
-  MATCHVALNAME _    -> Dict 
-  MATCHVALDATA  _   -> Dict
-  EXPAND _          -> Dict 
-  MAP _             -> Dict 
-  SELECT _          -> Dict 
-  CONCATMAP  _      -> Dict 
-  COMPOSED _        -> Dict 
-  HASHKEY _         -> Dict 
-  HASHKEYS _        -> Dict 
+qbDict qb = assertPretty (snd $ qbSing qb )
 
 -- | Same thing as qbDict but for the first argument. Since this isn't 
 --   possible *in general* returns a Maybe Dict vs a Dict 
-qbDict1 :: forall a b. QueryBuilder a b -> Maybe (Dict (PrettyRefl a))
-qbDict1 = \case
-  VALS              -> Just Dict 
-  FILTERVALUES _    -> Just Dict 
-  FILTERSUBKEYS _   -> Just Dict 
-  ROOTCELL          -> Just Dict 
-  SUBKEYS           -> Just Dict 
-  KEYPATH   _       -> Just Dict 
-  MATCHKEYNAME _    -> Just Dict 
-  MATCHVALNAME _    -> Just Dict 
-  MATCHVALDATA   _  -> Just Dict
-  EXPAND _          -> Just Dict 
-  COMPOSED cqb      -> case cqbDict cqb of 
-    (l,r)           -> Just l 
-  _                 -> Nothing 
+qbDict1 :: forall a b. QueryBuilder a b -> (Dict (PrettyRefl a))
+qbDict1 qb = assertPretty (fst $ qbSing qb) 
 
 -- | Get the singletons of the argument types for a query builder. 
 qbSing :: forall a b. QueryBuilder a b -> (Sing a, Sing b)
 qbSing = \case 
   VALS              -> (SREGKEY,SLIST SVAL)
 
-  FILTERVALUES  _   -> (SREGKEY, SREGKEY)
-
-  FILTERSUBKEYS _   -> (SREGKEY, SREGKEY)
-
   ROOTCELL          -> (SROOT,SREGKEY)
   
   SUBKEYS           -> (SREGKEY,SLIST SREGKEY)
   
   KEYPATH _         -> (SROOT,SREGKEY)
-  
-  PPRINT            -> (SANY,SUNIT)
-  
-  WRITEJSON _ _     -> (SANY,SUNIT)
   
   MATCHKEYNAME _    -> (SREGKEY, SBOOL)
   
@@ -112,10 +88,6 @@ qbSing = \case
   CONCATMAP qb     -> case qbSing qb of 
     (a, SLIST b)  -> (SLIST a, SLIST b)
 
-  HASHKEY _        -> (SREGKEY,SUNIT)
-
-  HASHKEYS _       -> (SLIST SREGKEY,SUNIT)
-
   COMPOSED xs     -> go xs 
  where 
    go :: forall a b. CompositeQB a b -> (SDSLType a, SDSLType b)
@@ -123,18 +95,11 @@ qbSing = \case
    go (QBS rest qb) = case qbSing qb of 
      (s_,e) -> case go rest of 
        (s,e_) -> (s,e)
+
 -- Adds a query builder to a focus if the types match/
 extendFocus :: QBConstraint a => (t :~: r) -> Focus t -> QueryBuilder t a -> Focus a 
 extendFocus Refl f qb = case qbSing qb of 
   (l,a) -> withSingI a $ FocusS f qb 
-
--- THIS IS ONLY SAFE IF THE SECOND ARGUMENT CONTAINS A FUNCTION THAT IS POLYMORPHIC OVER EVERY 
--- POSSIBLE OUTPUT TYPE OF ANOTHER QUERY BUILDER. This should more or less be used only for the print 
--- or writeJSON functions. 
-unsafeExtendFocus :: forall a t. PrettyRefl a => Focus t -> QueryBuilder 'ANY a -> Focus a 
-unsafeExtendFocus f qb = let qb' = unsafeCoerce qb :: QueryBuilder t a 
-                             (_,s) = qbSing qb :: (Sing 'ANY, Sing a) 
-                         in withSingI s $ FocusS f qb' 
 
 -- | Turns a focus into a BoxedMFold 
 collapseFocus :: PrettyRefl a => Focus a -> BoxedMFold HiveData (DSLToHask a) 
@@ -165,34 +130,13 @@ mapCQB f = \case
   QBZ qb -> QBZ (f qb)
   QBS rest qb -> QBS (mapCQB f rest) qb 
 
-rewritePath :: forall a. FilePath -> DSLExp a -> DSLExp a 
-rewritePath fPath = \case 
-  RootQuery fcs  -> RootQuery (mapFocus rewrite fcs )
-  VarQuery tv qb -> VarQuery tv (rewrite qb)
-  Assign fcs a   -> Assign (mapFocus rewrite fcs) a 
-  Command c      -> Command c 
- where 
-    rewrite :: forall a b. QueryBuilder a b -> QueryBuilder a b 
-    rewrite = \case 
-        HASHKEY  _    -> HASHKEY fPath  
-        HASHKEYS _    -> HASHKEYS fPath
-        WRITEJSON _ t -> WRITEJSON fPath t
-        COMPOSED cqb  -> COMPOSED (mapCQB rewrite cqb )
-        other         -> other   
-
 -- | Turns a 'QueryBuilder' into a 'BoxedMFold' of the corresponding Haskell types. 
 renderQB :: forall a b. PrettyRefl a => QueryBuilder a b -> BoxedMFold (DSLToHask a) (DSLToHask b)
-renderQB = \case 
-  VALS               -> MkBoxedMFold namedVals
-  FILTERVALUES qb    -> case renderQB qb of 
-    MkBoxedMFold f -> MkBoxedMFold $ filterValues f 
-  FILTERSUBKEYS qb   -> case renderQB qb of 
-    MkBoxedMFold f -> MkBoxedMFold $ filterSubkeys f   
+renderQB = \case  
+  VALS               -> MkBoxedMFold fqVals
   ROOTCELL           -> MkBoxedMFold rootCell
   SUBKEYS            -> MkBoxedMFold allSubkeys
   KEYPATH pth        -> MkBoxedMFold $ keyPath pth 
-  PPRINT             -> MkBoxedMFold pPrint
-  WRITEJSON fp mstr  -> MkBoxedMFold $ writeJSON fp mstr  
   MATCHKEYNAME bs    -> MkBoxedMFold $ to (nameContains bs)
   MATCHVALNAME bs    -> MkBoxedMFold $ to (valNameContains bs)
   MATCHVALDATA bs    -> MkBoxedMFold $ to (valDataContains bs)
@@ -204,8 +148,6 @@ renderQB = \case
   CONCATMAP qb       -> case renderQB qb of 
     MkBoxedMFold f   -> MkBoxedMFold $ concatMapped f 
   COMPOSED cqb       -> go cqb 
-  HASHKEY fp         -> MkBoxedMFold $ hashOneKey fp 
-  HASHKEYS fp        -> MkBoxedMFold $ hashManyKeys fp 
  where 
    mkRegItem :: forall b. Word32 -> Dict (IsCC b) -> BoxedMFold HiveData b 
    mkRegItem w Dict = MkBoxedMFold $ regItem @b w
@@ -232,28 +174,7 @@ composeQB :: forall a b c
 composeQB cqb qb = case qbSing qb of 
   (b,c) -> withSingI b $ withSingI c $ QBS cqb qb  
 
-unsafeComposeQB :: forall a b c
-                 . PrettyRefl c 
-                => CompositeQB a b 
-                -> QueryBuilder 'ANY c 
-                -> CompositeQB a c 
-unsafeComposeQB cqb qb = let qb' :: QueryBuilder b c 
-                             qb' = unsafeCoerce qb 
-                         in composeQB cqb qb' 
-
-unsafeLiftCQB :: forall a b
-              . QueryBuilder 'ANY b 
-             -> TypeDict a 
-             -> CompositeQB a b
-unsafeLiftCQB qb td@(MkTypeDict sA)
-  = let qb' :: QueryBuilder a b 
-        qb' = unsafeCoerce qb 
-    in withSingI sA
-     $ withSingI (snd $ qbSing qb')
-     $ withDict (qbDict qb') 
-     $ withDict (typeDict td)
-     $ QBZ qb' 
-                         
+             
 
 cqbSing :: forall a b. CompositeQB a b -> (Sing a, Sing b)
 cqbSing = \case 
@@ -269,4 +190,49 @@ liftCQB :: forall a b
 liftCQB qb = case qbSing qb of 
   (a,b) -> withSingI a $ withSingI b $ QBZ qb 
                           
+tdSing :: forall a. TypeDict a -> Sing a 
+tdSing (MkTypeDict s) = s 
 
+tdDict :: forall a. TypeDict a -> Dict (PrettyRefl a)
+tdDict (MkTypeDict s) = Dict 
+
+expSing :: forall a. DSLExp a -> Sing a 
+expSing = \case 
+  RootQuery fcs -> focSing fcs 
+  
+  VarQuery tv qb -> snd $ qbSing qb
+
+  Assign e _ -> expSing e  
+
+  IfThen b a a' -> expSing a'  
+
+  DSLVar tv     -> tvSing tv 
+
+  Append l1 l2  -> expSing l1 
+
+  Concat e      -> case expSing e of 
+    (SLIST x) -> x
+
+  IsEmpty e     -> SBOOL  
+
+  Command c     -> SEFFECT
+
+expDict :: forall a. DSLExp a -> Dict (PrettyRefl a)
+expDict = \case 
+  RootQuery fcs -> focDict fcs 
+
+  VarQuery tv qb -> qbDict qb 
+
+  Assign e _     -> expDict e 
+
+  IfThen b _ a   -> expDict a
+
+  DSLVar tv      -> assertPretty (tvSing tv) 
+
+  Append l1 l2   -> expDict l1 
+
+  Concat e       -> assertPretty (expSing (Concat e))
+
+  IsEmpty e      -> Dict 
+
+  Command c      -> Dict 

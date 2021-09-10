@@ -19,11 +19,7 @@ import Control.Monad.IO.Class
 import Data.Maybe (fromMaybe)
 import Control.Monad.Errors.Class
 import qualified Data.Sequence as S 
-
--- A bunch of these are written in a somewhat roundabout manner to improve the UX. 
--- (If you're familiar with Control.Lens these probably don't look like most of the other Folds 
--- you've seen, even sans the monadic effects)
-
+import qualified Data.ByteString.Char8 as C8 
 
 
 mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
@@ -31,13 +27,14 @@ mkRKey hData nk = do
       let keyStr = nk ^. keyString 
       let timeStamp = nk ^. nkTimeStamp
       let parentPath = hData ^. (getParentPath nk)
-      myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped namedVal)
+      let valPath    = BS.concat parentPath <> C8.pack "//" <> keyStr 
+      myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped (namedVal valPath))
       case parentPath of 
           [] -> pure $ 
-            RegistryKey "<$ROOT$>" [] timeStamp (NamedVals myVals) Truncated nk 
+            RegistryKey "<$ROOT$>" [] timeStamp myVals Truncated nk 
 
           _  -> pure $ 
-            RegistryKey keyStr parentPath timeStamp (NamedVals myVals) Truncated nk
+            RegistryKey keyStr parentPath timeStamp myVals Truncated nk
 
 
 -- | Requires a type application.
@@ -49,11 +46,12 @@ regItem w = mkMonadicFold go
       Nothing -> qErr $ QueryError w "RegItem lookup failed. Target doesn't exist or is wrong type."
       Just a  -> pure a 
 
-namedVals :: MFold RegistryKey [NamedVal]
-namedVals = mkMonadicFold go 
+fqVals :: MFold RegistryKey [FQValue]
+fqVals = mkMonadicFold go 
   where 
-    go :: RegistryKey -> ExploreM [NamedVal] 
-    go rKey = pure . getNamedVals $ rKey ^. keyValues 
+    go :: RegistryKey -> ExploreM [FQValue] 
+    go rKey = pure  $ rKey ^. keyValues 
+
 -- | Gets the root cell of the registry. 
 rootCell :: Query RegistryKey 
 rootCell = mkMonadicFold go 
@@ -66,23 +64,25 @@ rootCell = mkMonadicFold go
         Nothing -> report . S.singleton $ QueryError 0 "Error: Root Cell Not Found"
         Just aNK -> mkRKey hData aNK 
 
-namedVal :: MFold VKRecord [NamedVal] 
-namedVal = mkMonadicFold go 
+type Path = BS.ByteString 
+
+namedVal :: Path -> MFold VKRecord [FQValue] 
+namedVal path = mkMonadicFold go 
   where 
-    go :: VKRecord -> ExploreM [NamedVal]
+    go :: VKRecord -> ExploreM [FQValue]
     go vk = let valNm = vk ^. valName
             in if checkVKPointer (vk ^. dataLength)
             then look >>= \hData -> 
               hData ^!? regItem @Value (vk ^. dataPtr) >>= \case 
                 Nothing -> pure  $ []
-                Just vx -> pure  $ map NamedVal [(valNm,vx)] 
+                Just vx -> pure  $ [FQValue valNm vx path vk]  
 
             else case runGet (valueData 4 (vk ^. valueType)) (runPut . putWord32le $ vk ^. dataPtr) of 
                   Left err -> do 
                     printer <- getPrinter 
                     liftIO $ printer err
                     pure $ []
-                  Right v  -> pure  $ map NamedVal [(valNm,v)]
+                  Right v  -> pure  $ [FQValue valNm v path vk]  
                   
 getParentPath :: NKRecord -> Getter HiveData [BS.ByteString] 
 getParentPath nk = to runPath  

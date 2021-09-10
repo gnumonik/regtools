@@ -20,10 +20,19 @@ hashKey rKey = KeyHash nm hashTime hashVals where
 
   hashTime = encodeHex $ hash (C8.pack . prettyTime $ rKey ^. keyTime)
 
-  valString = BS.concat $ map (uncurry (<>) . over _2 valToBS) (map getNamedVal . getNamedVals $ rKey ^. keyValues)
+  hashVals = map hashVal (rKey ^. keyValues)
 
-  hashVals = encodeHex $ hash valString 
 
+hashVal ::  FQValue -> ValHash 
+hashVal  fq = ValHash nm path hashedData
+  where 
+    nm = T.pack . C8.unpack $ fq ^. fqValName 
+
+    hashedData = encodeHex $ hash . valToBS $ fq ^. fqValData 
+
+    path = T.pack . C8.unpack $ fq ^. fqValPath 
+
+-- here for staging reasons 
 valToBS :: Value -> BS.ByteString 
 valToBS = \case 
   REG_NONE bs                       -> bs 
@@ -39,5 +48,3 @@ valToBS = \case
   REG_FULL_RESOURCE_DESCRIPTOR bs   -> bs 
   REG_RESOURCE_REQUIREMENTS_LIST bs -> bs 
   REG_QWORD w                       -> runPut (putWord64le w)
-
-

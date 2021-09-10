@@ -30,6 +30,8 @@ import Control.Lens (set,_1)
 import Data.Either 
 
 
+type PluginArgs = [Some TypedVar]
+
 
 
 
@@ -41,7 +43,7 @@ runPlugin_ pPath outPath hPath = do
   pluginRaw <- TIO.readFile pPath
   case lexPlugin pluginRaw of
     Left err -> putStrLn (errorBundlePretty err)
-    Right toks -> case ST.runState (runParserT parsePlugin "" toks) (emptyContext, PluginMode outPath) of 
+    Right toks -> case ST.runState (runParserT parsePlugin "" toks) emptyContext of 
       (Left err,cxt) -> putStrLn ("\n" <> errorBundlePretty err)
       (Right exprs,cxt) -> do 
         !hData <- readHive hPath 

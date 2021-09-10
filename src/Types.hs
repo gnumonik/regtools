@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, DeriveGeneric, DeriveAnyClass #-}
+{-# LANGUAGE RecordWildCards, DeriveGeneric, DeriveAnyClass, TypeFamilyDependencies #-}
 module Types where
 
 import Data.Serialize
@@ -6,16 +6,18 @@ import Data.Serialize
       getWord16le,
       getWord32be,
       getWord32le,
+      putWord32be,
+      putWord64le,
       runGet,
       Serialize(..),
-      Get ) 
+      Get, runPut, putWord32le ) 
 import Data.Word ( Word16, Word32, Word64 ) 
 import qualified Data.ByteString as BS 
 import GHC.TypeLits ( KnownNat, Nat, natVal ) 
 import Data.Kind 
 import Data.Proxy ( Proxy(Proxy) ) 
 import qualified Data.Vector as V
-import Control.Lens ( makePrisms, makeLenses, Prism', view, _1 ) 
+import Control.Lens ( makePrisms, makeLenses, Prism', view, _1, _2, over, (^.) ) 
 import Data.Time.Clock
 import Time
 import Data.List 
@@ -42,14 +44,15 @@ import Text.Megaparsec
 import GHC.Generics
 import Data.Aeson ((.=))
 import qualified Data.List.NonEmpty as NE 
-
+import Crypto.Hash.MD5 
+import Data.Constraint
 {-- 
 Notes: 
 
 I should split up the API into "advanced" and "basic" queries aa
 
 --}
-
+rootPath = "<$ROOT$>"
 $(singletons [d| 
   data CCTok = SKRec 
             | NKRec 
@@ -346,9 +349,43 @@ data Value =     REG_NONE BS.ByteString -- 0x0
                | REG_FULL_RESOURCE_DESCRIPTOR BS.ByteString  -- 0x9 "A series of nested arrays (unknown format)"
                | REG_RESOURCE_REQUIREMENTS_LIST BS.ByteString -- 0xA "A series of nested arrays (unknown format)"
                | REG_QWORD Word64 -- 0xB Little Endian Word64
-  deriving (Show, Generic, A.ToJSON, Eq)
+  deriving (Show, Generic, Eq)
 
+instance A.ToJSON Value where 
+  toJSON = \case 
+    REG_NONE bs                       -> f "REG_NONE" bs 
 
+    REG_SZ bs                         -> u16 "REG_SZ" bs -- this is a string 4 realz 
+
+    REG_EXPAND_SZ bs                  -> u16 "REG_EXPAND_SZ" bs 
+
+    REG_BINARY bs                     -> f "REG_BINARY" bs 
+
+    REG_DWORD w                       -> A.object ["REG_DWORD" .= (T.pack $ show w)]
+
+    REG_DWORD_LITTLE_ENDIAN w         -> A.object ["REG_DWORD_LITTLE_ENDIAN" .= (T.pack $ show w)]
+
+    REG_DWORD_BIG_ENDIAN w            -> A.object ["REG_DWORD_BIG_ENDIAN" .= (T.pack $ show w)]
+
+    REG_LINK bs                       -> u16 "REG_LINK" bs 
+
+    REG_MULTI_SZ bs                   -> f "REG_MULTI_SZ" bs 
+
+    REG_RESOURCE_LIST bs              -> f "REG_RESOURCE_LIST" bs -- Need to make the list of strings parser
+
+    REG_FULL_RESOURCE_DESCRIPTOR bs   -> f "REG_FULL_RESOURCE_DESCRIPTOR" bs 
+
+    REG_RESOURCE_REQUIREMENTS_LIST bs -> f "REG_RESOURCE_REQUIREMENTS_LIST" bs  
+
+    REG_QWORD w                       -> A.object ["REG_QWORD" .= (T.pack $ show w)]
+   where 
+     bsToUTF16le bs = decode utf16le bs 
+
+     u16 :: T.Text -> BS.ByteString -> A.Value 
+     u16 c b = A.object [c .= (bsToUTF16le b)]
+
+     f :: T.Text -> BS.ByteString -> A.Value 
+     f c b = A.object [c .= (encodeHex b)]
 -- wtb generics.sop but i dont want the dependency 
 instance Pretty Value where 
   pretty = \case 
@@ -522,19 +559,27 @@ newtype WrongType = WrongType Word32 deriving (Show, Generic, A.ToJSON, Eq, Ord)
 data SubkeyData = Truncated | Empty | Subkeys (NE.NonEmpty RegistryKey)
   deriving (Show, Generic, A.ToJSON)
 
-newtype NamedVal = NamedVal {getNamedVal :: (BS.ByteString,Value)} deriving (Show, Eq, Generic, A.ToJSON)
+-- | "Fully Qualified" Registry Value. Contains the path to the value's parent and the VK record
+data FQValue = FQValue {_fqValName :: BS.ByteString 
+                       ,_fqValData :: Value 
+                       ,_fqValPath :: BS.ByteString 
+                       ,_fqVK      :: VKRecord} deriving (Show)
 
+instance A.ToJSON FQValue where 
+  toJSON fqv = A.object ["Val Name" .= A.toJSON (BC.unpack $ _fqValName fqv)
+                        ,"Val Path" .= A.toJSON (BC.unpack $ _fqValPath fqv) 
+                        ,"Val Data" .= A.toJSON (_fqValData fqv)]
+instance Pretty FQValue 
+ where 
+  pretty (FQValue nm dat pth _) 
+    =       text "|-----------"
+      <$$>  text "|- Value Path:" <+> text (BC.unpack pth)
+      <$$>  text "|- Value Name:" <+> text (BC.unpack nm) 
+      <$$>  text "|- Value Data:" <+> pretty dat 
 
-newtype NamedVals = NamedVals {getNamedVals :: [NamedVal]} deriving (Show, Eq, Generic, A.ToJSON)
-
-instance Pretty NamedVals where 
-  pretty = vcat . formatVals . map getNamedVal . getNamedVals
-
-instance Pretty NamedVal where 
-  pretty (NamedVal (nm,vl)) =
-         text "|-----------"
-    <$$>  text "|- Value Name:" <+> pretty nm 
-    <$$>  text "|- Value Data:" <+> pretty vl
+data ValHash = ValHash {_vHashName :: T.Text 
+                       ,_vHashPath :: T.Text 
+                       ,_vHashData :: T.Text} deriving (Show, Generic, Eq, A.ToJSON, A.FromJSON)
 
 -- | Registry Key data type. This is a "thin" representation of a Registry Key, its values, and its subkeys. 
 --   Generally, a query which is intended to be used by true end users (i.e. security professionals who aren't 
@@ -544,7 +589,7 @@ data RegistryKey  = RegistryKey {
     _keyName    :: !BS.ByteString 
   , _keyParents :: ![BS.ByteString]
   , _keyTime    :: !UTCTime
-  , _keyValues  :: !NamedVals
+  , _keyValues  :: ![FQValue]
   , _subkeys    :: !SubkeyData
   , _keyNode    :: !NKRecord 
 } deriving (Show, Generic)
@@ -552,11 +597,13 @@ data RegistryKey  = RegistryKey {
 data KeyHash = KeyHash {
     _fqKeyName    :: !T.Text
   , _timeHash     :: !T.Text
-  , _valuesHash   :: !T.Text 
+  , _valuesHash   :: ![ValHash]
 } deriving (Show, Eq, Generic, A.ToJSON, A.FromJSON)
+
 
 data KeyHashFileObj = OneKey KeyHash 
                     | ManyKeys [KeyHash]
+                    | ManyVals [ValHash]
   deriving (Show, Eq, Generic, A.ToJSON, A.FromJSON)
 
 instance A.ToJSON RegistryKey where 
@@ -567,16 +614,16 @@ instance A.ToJSON RegistryKey where
                 ,"Values"    .= A.toJSON kVals 
                 ,"Subkeys"   .= A.toJSON subKS]
    where 
-     formatPath bs = (<> "\\") . intercalate "\\" . map unpack  $ bs 
+     formatPath bs = {-- (<> "\\") . --} intercalate "\\" . map unpack  $ bs 
 
 instance Pretty RegistryKey where 
   pretty (RegistryKey n p t v sks _) =  text "" 
                                 <$$>  text "| Key Name:"   <+> text (BC.unpack n)
                                 <$$>  text "| Path:"       <+> formatPath p 
                                 <$$>  text "| TimeStamp: " <+> pretty t 
-                                <$$> (text "| Values:" & (\x -> if null (getNamedVals v) 
+                                <$$> (text "| Values:" & (\x -> if null  v 
                                                                 then x <+> text "<NONE>" 
-                                                                else  x <$$> pretty v)) 
+                                                                else  x <$$> vsep (formatVals v))) 
                                 <$$> (text "| Subkeys:" & (\x -> case sks of
                                                                   Empty      ->  x <+> text "<NONE>" 
                                                                   Truncated  -> x <+> text "<TRUNCATED>"
@@ -586,11 +633,16 @@ instance Pretty RegistryKey where
 formatPath :: [BS.ByteString] -> Doc 
 formatPath bs = text . (<> "\\") . intercalate "\\" . map unpack  $ (reverse bs) 
 
-formatVals :: [(BS.ByteString,Value)] -> [Doc]
-formatVals vs = flip map vs $ \(nm,vl) -> indent 2 (
-          text "|-----------"
-    <$$>  text "|- Value Name:" <+> pretty nm 
-    <$$>  text "|- Value Data:" <+> pretty vl )
+formatVals :: [FQValue] -> [Doc]
+formatVals fqvs = go fqvs' 
+ where 
+  fqvs' = map (\x -> (_fqValName x, _fqValData x)) fqvs
+  
+  go :: [(BS.ByteString,Value)] -> [Doc]
+  go vs = flip map vs $ \(nm,vl) -> indent 2 (
+            text "|-----------"
+      <$$>  text "|- Value Name:" <+> text (BC.unpack nm)
+      <$$>  text "|- Value Data:" <+> pretty vl )
 
 {----------------------------------------------
   ---------------------------------------------      
@@ -607,13 +659,17 @@ data Tok
   = Query 
   | LArrow 
   | Pipe 
-  | LParen 
+  | LParen
+  | If 
+  | Then 
+  | Else 
   | RParen 
   | LCurly 
   | RCurly 
   | Plugin
-  | As 
-  | FPathVar
+  | ConcatTok 
+  | AppendTok 
+  | IsEmptyTok 
   | CmdTok CmdToken 
   | QBTok QBToken 
   | IntLike Int 
@@ -631,28 +687,27 @@ instance TraversableStream [Tok] where
                              , pstateSourcePos = let oldCol = sourceColumn pstateSourcePos 
                                                  in pstateSourcePos {sourceColumn = mkPos $ unPos oldCol + n}
                              ,..}
+
 -- | Tokens for DSL Commands 
 data CmdToken 
   = HelpTok 
   | LoadTok 
   | RunTok
-  | ExitTok deriving (Show, Generic, A.ToJSON, Eq, Ord) 
+  | ExitTok 
+  | WriteJSONTok 
+  | PrintTok 
+  | WriteHashTok 
+  | ShowTypeTok  deriving (Show, Generic, A.ToJSON, Eq, Ord) 
 
 -- | Tokens for query builders 
 data QBToken 
   = Root
   | SubKeys  
-  | PPrint 
   | KeyPath 
-  | WriteJSON 
   | MatchName 
   | MatchValName 
   | MatchValData
-  | Expand 
-  | FilterSubkeys 
-  | FilterValues
-  | HashKey 
-  | HashKeys
+  | Expand
   | Vals
   | Map 
   | Select 
@@ -679,29 +734,31 @@ $(singletons [d|
     | REGKEY 
     | VAL
     | LIST DSLType
-    | UNIT 
     | BOOL
-    | ANY {-- WARNINGs: THIS CAN ONLY EXIST AS THE INPUT TYPE (First Argument) TO A BUILDER! 
-                        ANY BUILDER THAT USES THIS MUST BE TRULY POLYMORPHIC IN THE INPUT ARGUMENT 
-                        MODULO CONSTRAINTS ON THE OUTPUT TYPES 
-
-                        The implementation of polymorphism uses unsafeCoerce. I don't think 
-                        there's a way around that without implementing a real polymorphic type 
-                        system + type checker / inference for the DSL, which I really do not want to
-                        because it would be extreme overkill
-                        --}
+    | EFFECT 
        deriving (Show, Generic, A.ToJSON, Eq)
  |])
 
-type DSLToHask :: DSLType -> Type 
-type family DSLToHask x where 
-  DSLToHask 'VAL      = NamedVal
-  DSLToHask 'ROOT     = HiveData 
-  DSLToHask 'REGKEY   = RegistryKey 
-  DSLToHask ('LIST a) = [DSLToHask a]
-  DSLToHask 'BOOL     = Bool
-  DSLToHask 'UNIT     = ()
+assertPretty :: forall (a :: DSLType)
+              . Sing a -> Dict (PrettyRefl a)
+assertPretty = \case 
+  SROOT -> Dict 
+  SREGKEY -> Dict 
+  SVAL    -> Dict 
+  SLIST a -> case assertPretty a of 
+    Dict  -> Dict 
+  SBOOL   -> Dict  
+  SEFFECT -> Dict           
 
+type DSLToHask :: DSLType -> Type 
+type family DSLToHask x = y | y -> x  where 
+  DSLToHask 'VAL        = FQValue
+  DSLToHask 'ROOT       = HiveData 
+  DSLToHask 'REGKEY     = RegistryKey 
+  DSLToHask ('LIST a)   = [DSLToHask a]
+  DSLToHask 'BOOL       = Bool
+  DSLToHask 'EFFECT     = ()
+  
 data SomeQB :: Type where 
   SomeQB :: QueryBuilder a b -> SomeQB 
 
@@ -717,15 +774,8 @@ type JSONTag = T.Text
 
 data QueryBuilder :: DSLType -> DSLType -> Type where 
   -- Need a "filterValues" function
-  VALS          :: PrettyRefl ('LIST 'VAL)   => QueryBuilder 'REGKEY ('LIST 'VAL)
 
-  FILTERVALUES  :: PrettyRefl 'REGKEY => QueryBuilder 'VAL 'BOOL -> QueryBuilder 'REGKEY 'REGKEY
-
-  FILTERSUBKEYS :: PrettyRefl 'REGKEY => QueryBuilder 'REGKEY 'BOOL -> QueryBuilder 'REGKEY 'REGKEY 
-
-  HASHKEY       :: PrettyRefl 'UNIT  => FilePath -> QueryBuilder 'REGKEY 'UNIT 
-
-  HASHKEYS      :: PrettyRefl 'UNIT  => FilePath -> QueryBuilder ('LIST 'REGKEY) 'UNIT 
+  VALS          :: PrettyRefl ('LIST 'VAL)   => QueryBuilder 'REGKEY ('LIST 'VAL) 
 
   ROOTCELL      :: PrettyRefl 'REGKEY => QueryBuilder 'ROOT 'REGKEY 
 
@@ -734,10 +784,6 @@ data QueryBuilder :: DSLType -> DSLType -> Type where
   SUBKEYS       :: PrettyRefl ('LIST 'REGKEY) => QueryBuilder 'REGKEY ('LIST 'REGKEY)
 
   KEYPATH       :: PrettyRefl 'REGKEY => [String] -> QueryBuilder 'ROOT 'REGKEY
-
-  PPRINT        :: PrettyRefl 'UNIT => QueryBuilder 'ANY 'UNIT 
-
-  WRITEJSON     :: PrettyRefl 'UNIT => FilePath -> Maybe JSONTag -> QueryBuilder 'ANY 'UNIT 
 
   MATCHKEYNAME  :: PrettyRefl 'BOOL => BS.ByteString -> QueryBuilder 'REGKEY 'BOOL 
 
@@ -800,40 +846,51 @@ data TypedVar :: DSLType -> Type where
 data TypeDict :: DSLType -> Type where 
   MkTypeDict :: PrettyRefl a =>  Sing a -> TypeDict a 
 
+class DSLHashable (a :: DSLType) where 
+  mkHash :: DSLToHask a -> KeyHashFileObj
+
 -- | Commands
 data DSLCommand :: Type where 
-  EXIT :: DSLCommand 
-  HELP :: DSLCommand 
-  LOAD :: FilePath -> T.Text -> DSLCommand
-  RUN  :: FilePath -> FilePath -> DSLCommand 
+  EXIT      :: DSLCommand 
+  HELP      :: DSLCommand 
+  PPRINT    :: DSLExp a -> DSLCommand
+  WRITEJSON :: DSLExp a -> FilePath -> Maybe T.Text -> DSLCommand
+  HASH      :: Dict (DSLHashable a) -> DSLExp a -> FilePath -> DSLCommand  
+  SHOWTYPE  :: DSLExp a -> DSLCommand 
 
--- | DSL "Expression". Arguably assignments and commands are statements. 
---   This isn't the lambda calculus though so the different doesn't really matter.
+-- | DSL Expressions
 data DSLExp :: DSLType -> Type where
+  DSLVar    :: TypedVar a -> DSLExp a 
 
   RootQuery :: Focus a -> DSLExp a
 
   VarQuery  :: TypedVar a -> QueryBuilder a b -> DSLExp b 
 
-  Assign    :: Focus a -> TypedVar a -> DSLExp a
+  Assign    :: DSLExp a -> TypedVar a -> DSLExp a
 
-  Command   :: DSLCommand -> DSLExp 'UNIT 
+  IfThen    :: DSLExp 'BOOL -> DSLExp a -> DSLExp a -> DSLExp a 
 
-  -- commands/statements, but those are easy to add later 
+  Append    :: DSLExp ('LIST a) -> DSLExp ('LIST a) -> DSLExp ('LIST a)
 
--- | For when you have a thing but GHC won't believe that you 
---   have it  
+  Concat    :: DSLExp ('LIST ('LIST a)) -> DSLExp ('LIST a)
+
+  IsEmpty   :: DSLExp ('LIST a) -> DSLExp 'BOOL 
+
+  Command   :: DSLCommand -> DSLExp 'EFFECT 
+
+-- | For when you have a thing but GHC won't let you know what it is that you have 
 data Some :: (k -> Type) -> Type where 
   Some :: forall k (a :: k) (c :: k -> Type)
-        . c a -> Some c  
+        . c a -> Some c 
 
-data ParseMode = REPLMode | PluginMode FilePath deriving (Show, Eq)
-
-type DSLParser a = ParsecT Void [Tok] (ST.State (Context,ParseMode)) a  
+type DSLParser a = ParsecT Void [Tok] (ST.State Context) a  
 
 makeLenses ''RegistryKey
 
 makeLenses ''KeyHash
 
 makeLenses ''Context
-rootPath = "<$ROOT$>"
+
+makeLenses ''FQValue
+
+makeLenses ''ValHash

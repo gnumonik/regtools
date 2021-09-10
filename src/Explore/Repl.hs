@@ -21,7 +21,7 @@ import Data.Time.Clock
 import Types 
 import Data.List.NonEmpty as NE 
 import qualified Data.Aeson as A 
-import Explore.Optics.NK (checkHash)
+import Explore.Optics.NK (checkHash, checkValHash)
 import Control.Monad.Errors.Class
 import qualified Data.ByteString as BS 
 
@@ -59,38 +59,26 @@ initRepl fPath = do
           Just ABORT -> pure () 
 
 runLine :: T.Text -> ReplM (Maybe ABORT)
-runLine line  = gets snd >>= \cxt1 -> case runParser (some dsltoks) "" line of 
+runLine line  = gets snd >>= \cxt1 -> case runParser (some dslToks) "" line of 
   Left err    -> outputStrLn ("\n" <> errorBundlePretty err) >> pure Nothing 
 
-  Right lexed -> case ST.runState (runParserT dslExp "" lexed) (cxt1,REPLMode) of
+  Right lexed -> case ST.runState (runParserT dslExp "" lexed) cxt1 of
 
     (Left err,cxt)  ->  
       outputStrLn ("\n" <> errorBundlePretty err) >> pure Nothing 
 
-    (Right (Some expr),cxt) -> do 
+    (Right (Some expr), cxt) -> do 
       (e :: HiveData) <- look 
       (s,_cxt) <- get 
       printer <- getExternalPrint 
-      !(merr,s') <- liftIO $ ST.runStateT (evalDSL printer e expr) s
+      (merr,s') <- liftIO $ ST.runStateT (evalDSL printer e expr) s
       case merr of 
-        Left ABORT -> pure . Just $ ABORT 
-        Right Nothing -> do 
-          modify' $ \_ -> (s',fst cxt) 
+        Just ABORT -> pure . Just $ ABORT 
+        Nothing -> do 
+          modify' $ const (s',cxt) 
           pure Nothing 
-        Right (Just err) -> do 
-          modify' $ \_ -> (s',fst cxt) 
-          liftIO (printer . show $ err) >> pure Nothing    
-      
- where 
-   prettyErr :: forall s e
-              . (VisualStream s, ShowErrorComponent e) 
-             => ParseErrorBundle s e -> String
-   prettyErr errBundle = let err = NE.head (bundleErrors errBundle)
-                         in parseErrorTextPretty err 
 
--- split this out to its own module later 
-
-
+-- Move this somewhere else. Maybe?
 type HashPath = FilePath 
 
 checkKeyHash :: HivePath -> HashPath -> IO ()
@@ -102,8 +90,8 @@ checkKeyHash hvPath hshPath = do
   t2 <- getCurrentTime 
   let diffTime = diffUTCTime t2 t1  
   putStrLn  $ "\nHive Loaded in " <> show diffTime <> " seconds"
-  putStrLn $ "\nLoading key hash file @" <> hshPath
-  putStrLn $ "\nChecking hashes... "
+           <> "\nLoading key hash file @" <> hshPath
+           <> "\nChecking hashes... "
   rawHashFile <- BS.readFile hshPath 
   case A.decodeStrict @KeyHashFileObj rawHashFile of  
     Nothing -> putStrLn "Error! Could not deserialize the hash file JSON"
@@ -114,4 +102,7 @@ checkKeyHash hvPath hshPath = do
       ManyKeys khs -> do 
         runReaderT (runE $ mapM checkHash khs) (hData,putStrLn) 
         pure () 
+      ManyVals vls -> do 
+        runReaderT (runE $ mapM checkValHash vls) (hData,putStrLn)
+        pure ()
   putStrLn "\nHash check complete."

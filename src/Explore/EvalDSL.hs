@@ -2,7 +2,7 @@ module Explore.EvalDSL where
 
 import Types
 import Data.Word (Word32)
-import Control.Lens 
+import Control.Lens ( type (:~:)(Refl)) 
 import Lib 
 import Explore.ExploreM 
 import Explore.Optics.General
@@ -18,6 +18,7 @@ import Explore.ParseDSL
 import Control.Monad.Errors 
 import Control.Monad.Errors.Class 
 import qualified Data.Text as T 
+import qualified Data.Text.Lazy as TL 
 import qualified  Control.Monad.Trans.State.Strict as ST  
 import Explore.Magic
 import Data.Kind
@@ -33,7 +34,12 @@ import Data.Singletons.Decide (decideEquality)
 import qualified Data.Text.IO as TIO 
 import Control.Monad.Reader
 import Text.Megaparsec (errorBundlePretty, runParserT, runParser, some, between)
-import Explore.LexDSL (sc, pluginToks)
+import Explore.LexDSL (sc, dslToks)
+import qualified Data.Aeson as A
+import Data.Aeson ((.=))
+import Text.Pretty.Simple (pShow)
+import Text.PrettyPrint.Leijen
+    ( Pretty(pretty), displayS, renderPretty )
 type ValMap = M.Map T.Text DSLValue 
 
 data DSLValue :: Type where 
@@ -43,10 +49,9 @@ type EvalM a = ST.StateT ValMap IO  a
 
 data ABORT = ABORT deriving (Show, Eq)
 
-tvSing :: forall a. TypedVar a -> Sing a 
-tvSing (MkTypedVar txt) = sing @ a 
 
-lookupVal :: forall a. (String -> IO ()) -> TypedVar a -> EvalM (Either ABORT (Dict (PrettyRefl a),DSLToHask a))
+
+lookupVal :: forall a. (String -> IO ()) -> TypedVar a -> EvalM (Either ABORT (Dict (PrettyRefl a),DSLToHask a, Sing a))
 lookupVal printer tv@(MkTypedVar txt) = get >>= \vals -> 
   case M.lookup txt vals of 
     Nothing -> do 
@@ -54,7 +59,7 @@ lookupVal printer tv@(MkTypedVar txt) = get >>= \vals ->
       pure . Left $ ABORT 
 
     Just (MkDSLValue sV v) -> case decideEquality sV (tvSing tv) of 
-      Just Refl -> pure . Right $ (Dict,v) 
+      Just Refl -> pure . Right $ (Dict,v,sV) 
       Nothing   -> do 
         liftIO . printer $ "FATAL ERROR! TYPE MISMATCH IN EVALUATION!\n"  
                         <> "(This should be impossible. If it happens it means the type checker " 
@@ -63,49 +68,110 @@ lookupVal printer tv@(MkTypedVar txt) = get >>= \vals ->
 
 -- | Evaluates a DSL expression. First argument is the thread-safe 
 --   printer function Haskeline generates 
-evalDSL :: forall a. (String -> IO ()) -> HiveData -> DSLExp a -> EvalM (Either ABORT (Maybe QueryErrors))
-evalDSL printer hData = \case 
-  RootQuery fcs -> case withDict (focDict fcs) $ collapseFocus fcs of 
-    MkBoxedMFold fld ->  do 
-      liftIO (query printer hData fld)  
-      pure . Right $ Nothing 
-
-  VarQuery tv@(MkTypedVar txt) qb -> lookupVal printer tv >>= \case 
-    Left ABORT -> pure . Left $ ABORT 
-    Right (Dict,v)    -> case renderQB qb of
-      MkBoxedMFold fld -> do 
-        !_ <- liftIO $ query' printer hData v fld 
-        pure . Right $ Nothing 
-
-  Assign fcs (MkTypedVar txt) -> case withDict (focDict fcs) $ collapseFocus fcs of 
-    MkBoxedMFold fld ->  do 
-      x <- liftIO (query printer hData fld)
-      case x of 
-        Left err -> pure . Right . Just $ err
-        Right (a :: DSLToHask a)  -> do 
-          let sF = focSing fcs 
-          modify (withDict (focDict fcs) $ M.insert txt (MkDSLValue sF a))
-          pure . Right $ Nothing 
-
-  Command cmd -> runCmd cmd 
-
+evalDSL :: forall a. (String -> IO ()) -> HiveData -> DSLExp a  -> EvalM (Maybe ABORT)
+evalDSL printer hData exp = evalPure exp >>= \case 
+    Left _ -> pure . Just $ ABORT 
+    _      -> pure Nothing 
  where
+    catchErr f err = liftIO (f err) >> pure 
+    evalPure :: forall a. DSLExp a -> EvalM (Either ABORT (DSLToHask a)) 
+    evalPure = \case 
+      RootQuery fcs -> case withDict (focDict fcs) $ collapseFocus fcs of 
+        MkBoxedMFold fld ->  do 
+          liftIO (query printer hData fld) >>= \case 
+            Left err -> pure . Left $ ABORT 
+            Right a  -> pure . Right $ a 
 
-   runCmd :: DSLCommand  -> EvalM (Either ABORT (Maybe QueryErrors)) 
-   runCmd = \case 
-      EXIT -> pure . Left $ ABORT 
+      VarQuery tv@(MkTypedVar txt) qb -> lookupVal printer tv >>= \case 
+        Left ABORT -> pure . Left $  ABORT 
+        Right (Dict,v,s)    -> case renderQB qb of
+          MkBoxedMFold fld -> do 
+            liftIO (query' printer hData v fld) >>= \case 
+              Left err -> pure . Left $ ABORT 
+              Right a  -> pure . Right $ a  
+
+      Assign e (MkTypedVar txt) -> evalPure e >>= \case 
+        Left ABORT -> pure . Left $ ABORT 
+        Right v    ->  do 
+                let sF = expSing e 
+                modify (withDict (expDict e) $ M.insert txt (MkDSLValue sF v))
+                pure . Right $ v
+
+      IfThen e1 e2 e3 -> do 
+        evalPure e1 >>= \case 
+          Left ABORT -> pure . Left $ ABORT 
+          Right b    -> if b then evalPure e2 else evalPure e3  
+
+      DSLVar tv -> lookupVal printer tv >>= \case 
+        Left ABORT -> pure . Left $ ABORT 
+        Right (Dict,v,s) -> pure . Right $ v 
+
+      Append l1 l2 -> 
+        evalPure l1 >>= \case 
+          Left _   -> pure $ Left ABORT 
+          Right v1 -> evalPure l2 >>= \case 
+            Left _   -> pure $ Left ABORT 
+            Right v2 -> pure . Right $ v1 <> v2 
+      Concat l -> 
+        evalPure l >>= \case 
+          Left _  -> pure $ Left ABORT 
+          Right v -> pure . Right $ concat v 
+
+      IsEmpty l1 -> 
+        evalPure l1 >>= \case 
+          Left _  -> pure $ Left ABORT 
+          Right v -> pure . Right $ null v 
+
+      Command c -> runCmd c >>= \case 
+          Just _  -> pure $ Left ABORT 
+          Nothing -> pure . Right $ () 
       
-      LOAD _ _-> pure . Right $ Nothing --Load pretty much just exists for typechecking purposes 
+    runCmd :: DSLCommand  -> EvalM (Maybe ABORT) 
+    runCmd = \case 
+        SHOWTYPE e -> do 
+          liftIO $ printer (show . fromSing . expSing $ e) 
+          pure Nothing 
 
-      RUN inPath outPath -> do 
-        liftIO $ runPlugin printer inPath outPath hData 
-        pure . Right $ Nothing 
+        EXIT -> pure . Just $ ABORT 
 
-      HELP -> liftIO (printer "Help urself") >> pure (Right Nothing)
+        HELP -> liftIO (printer "Help urself") >> pure Nothing
 
-{-- PLUGINS 
-    (Here temporarily pending module reorganization)
---}
+        WRITEJSON e fPath mstr -> do
+          withDict (expDict e) $ 
+            evalPure e >>= \case 
+              Left ABORT -> pure . Just $ ABORT 
+              Right a -> do  
+                let f = printer 
+                let js = case mstr of 
+                          Nothing  -> A.toJSON a 
+                          Just txt -> A.object [txt .= a] 
+                liftIO $ f (TL.unpack . pShow $ js)
+                liftIO $ A.encodeFile fPath js
+                pure Nothing
+
+        HASH Dict e fPath -> withDict (expDict e) $ do 
+          evalPure e >>= \case 
+            Left ABORT -> pure . Just $ ABORT 
+            Right a -> do 
+                let f = printer 
+                let hashed =  mkHash a -- Needed to add a type family dependency/injectivity annotation for this to work
+                liftIO . f . TL.unpack . pShow $ hashed 
+                liftIO $ A.encodeFile fPath hashed 
+                pure Nothing
+
+        PPRINT e -> evalPure e >>= \case 
+          Left ABORT -> pure . Just $ ABORT 
+          Right a -> 
+            let f = printer 
+            in withDict (expDict e) 
+              $ (liftIO 
+                . f 
+                . (<> "\n")
+                . (\x -> displayS x  "") 
+                . renderPretty 1.0 200 
+                . pretty
+                $ a) >> pure Nothing 
+
 type PluginM = ReaderT HiveData (ST.StateT ValMap IO)
 
 type HivePath = FilePath 
@@ -115,6 +181,7 @@ type OutputPath = FilePath
 runPlugin :: Printer -> PluginPath -> OutputPath -> HiveData -> IO ()
 runPlugin f pPath oPath hData = loadPlugin f pPath oPath >>= \case 
   Left err   -> f . T.unpack $ err 
+
   Right exps -> execPlugin f exps hData  
 
 -- this is ugly and dirty and bad and i need to fix it at some point
@@ -125,22 +192,19 @@ loadPlugin f pPath fPath = do
     Left err -> pure . Left $ err 
     Right _  -> pure $ lexParsePlugin pluginRaw fPath
 
-
 lexParsePlugin :: T.Text -> FilePath -> Either T.Text [Some DSLExp]
 lexParsePlugin pluginRaw outPath = case lexPlugin pluginRaw of
     Left err -> Left . T.pack $ errorBundlePretty err
-    Right toks -> case ST.runState (runParserT parsePlugin "" toks) (emptyContext, PluginMode outPath) of 
-      (Left err,cxt) -> Left . T.pack $ errorBundlePretty err
-      (Right exprs,cxt) ->  Right $ exprs 
-      
+    Right toks -> case ST.runState (runParserT parsePlugin "" toks) emptyContext of 
+      (Left err,cxt)    -> Left . T.pack $ errorBundlePretty err
+      (Right exprs,cxt) -> Right $ exprs 
 
-lexPlugin txt = runParser (sc >> some pluginToks) "" txt 
+lexPlugin txt = runParser (sc >> some dslToks) "" txt 
 
 parsePlugin :: DSLParser [Some DSLExp]
 parsePlugin = do 
   tk Plugin
   between (tk LCurly) (tk RCurly) (some dslExp)
-
 
 execPlugin :: Printer -> [Some DSLExp] -> HiveData -> IO ()
 execPlugin f exprs hData = ST.evalStateT (runReaderT (_execPlugin f exprs) hData) M.empty  
@@ -152,18 +216,13 @@ _execPlugin f (Some x:xs) = do
   hData <- ask   
   (a,newVals) <- liftIO $ ST.runStateT (evalDSL putStrLn hData x) vals 
   case a of 
-    Left ABORT -> do 
+    Just ABORT -> do 
         liftIO . f $ "FATAL ERROR! ABORTING EXECUTION!"
       
-    Right Nothing -> do 
+    Nothing -> do 
         lift . ST.modify' $ const newVals 
         _execPlugin f xs 
 
-    Right (Just qErrs) -> do
-      liftIO $ f "Error(s) while running query:" 
-      liftIO $ f (show qErrs)
-      pure () -- it occurs to me now that this branch is redundant. will remove later 
-        
 
 
 
