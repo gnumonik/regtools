@@ -52,7 +52,7 @@ Notes:
 I should split up the API into "advanced" and "basic" queries aa
 
 --}
-rootPath = "<$ROOT$>"
+
 $(singletons [d| 
   data CCTok = SKRec 
             | NKRec 
@@ -595,7 +595,7 @@ data RegistryKey  = RegistryKey {
 } deriving (Show, Generic)
 
 data KeyHash = KeyHash {
-    _fqKeyName    :: !T.Text
+    _hshKeyName   :: !T.Text
   , _timeHash     :: !T.Text
   , _valuesHash   :: ![ValHash]
 } deriving (Show, Eq, Generic, A.ToJSON, A.FromJSON)
@@ -608,13 +608,13 @@ data KeyHashFileObj = OneKey KeyHash
 
 instance A.ToJSON RegistryKey where 
   toJSON (RegistryKey kName kParents kTime kVals subKS _) 
-    = A.object ["Key Name"   .= A.toJSON (show kName)
-                ,"Path"      .= A.toJSON (formatPath kParents)
+    = A.object ["Key Name"   .= A.toJSON (T.pack . BC.unpack $ kName)
+                ,"Path"      .= A.toJSON (formatPath_ kParents)
                 ,"TimeStamp" .= A.toJSON (prettyTime kTime)
                 ,"Values"    .= A.toJSON kVals 
                 ,"Subkeys"   .= A.toJSON subKS]
    where 
-     formatPath bs = {-- (<> "\\") . --} intercalate "\\" . map unpack  $ bs 
+     formatPath_ bs = {-- (<> "\\") . --} intercalate "\\" . map unpack  $ bs 
 
 instance Pretty RegistryKey where 
   pretty (RegistryKey n p t v sks _) =  text "" 
@@ -625,9 +625,9 @@ instance Pretty RegistryKey where
                                                                 then x <+> text "<NONE>" 
                                                                 else  x <$$> vsep (formatVals v))) 
                                 <$$> (text "| Subkeys:" & (\x -> case sks of
-                                                                  Empty      ->  x <+> text "<NONE>" 
+                                                                  Empty      -> x <+> text "<NONE>" 
                                                                   Truncated  -> x <+> text "<TRUNCATED>"
-                                                                  Subkeys ne ->  x <$$> indent 3 (vsep . map pretty . NE.toList $  ne))) 
+                                                                  Subkeys ne -> x <$$> indent 3 (vsep . map pretty . NE.toList $  ne))) 
                                 <$$> text "|------"
 
 formatPath :: [BS.ByteString] -> Doc 
@@ -657,7 +657,8 @@ type Lexer_ = Parsec Void T.Text ()
 -- | A DSL Lexeme. 
 data Tok 
   = Query 
-  | LArrow 
+  | Let 
+  | Equal
   | Pipe 
   | LParen
   | If 
@@ -697,6 +698,8 @@ data CmdToken
   | WriteJSONTok 
   | PrintTok 
   | WriteHashTok 
+  | PrintStrTok
+  | CheckHashTok 
   | ShowTypeTok  deriving (Show, Generic, A.ToJSON, Eq, Ord) 
 
 -- | Tokens for query builders 
@@ -779,18 +782,18 @@ data QueryBuilder :: DSLType -> DSLType -> Type where
 
   ROOTCELL      :: PrettyRefl 'REGKEY => QueryBuilder 'ROOT 'REGKEY 
 
-  EXPAND        :: PrettyRefl ('LIST 'REGKEY) => Maybe Word32 -> QueryBuilder 'REGKEY 'REGKEY 
+  EXPAND        :: PrettyRefl 'REGKEY => Maybe Word32 -> QueryBuilder 'REGKEY 'REGKEY 
 
   SUBKEYS       :: PrettyRefl ('LIST 'REGKEY) => QueryBuilder 'REGKEY ('LIST 'REGKEY)
 
-  KEYPATH       :: PrettyRefl 'REGKEY => [String] -> QueryBuilder 'ROOT 'REGKEY
+  KEYPATH       :: PrettyRefl ('LIST 'REGKEY) => [String] -> QueryBuilder 'REGKEY ('LIST 'REGKEY)
 
   MATCHKEYNAME  :: PrettyRefl 'BOOL => BS.ByteString -> QueryBuilder 'REGKEY 'BOOL 
 
   MATCHVALNAME  :: PrettyRefl 'BOOL => BS.ByteString -> QueryBuilder 'VAL 'BOOL 
 
   MATCHVALDATA  :: PrettyRefl 'BOOL 
-                => BS.ByteString -- string to search
+                => T.Text -- the encoding varies based on the value type
                 -> QueryBuilder 'VAL 'BOOL 
 
   MAP           :: (PrettyRefl ('LIST b), PrettyRefl a)
@@ -854,9 +857,11 @@ data DSLCommand :: Type where
   EXIT      :: DSLCommand 
   HELP      :: DSLCommand 
   PPRINT    :: DSLExp a -> DSLCommand
+  PRINTSTR  :: T.Text -> DSLCommand 
   WRITEJSON :: DSLExp a -> FilePath -> Maybe T.Text -> DSLCommand
   HASH      :: Dict (DSLHashable a) -> DSLExp a -> FilePath -> DSLCommand  
-  SHOWTYPE  :: DSLExp a -> DSLCommand 
+  SHOWTYPE  :: DSLExp a -> DSLCommand
+  CHKHASH   :: FilePath -> DSLCommand 
 
 -- | DSL Expressions
 data DSLExp :: DSLType -> Type where
@@ -893,4 +898,4 @@ makeLenses ''Context
 
 makeLenses ''FQValue
 
-makeLenses ''ValHash
+makeLenses ''ValHash 

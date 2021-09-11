@@ -39,14 +39,12 @@ import Data.List (foldl')
 import Control.Monad (foldM)
 import Control.Monad.Look
 
-
 mapOS :: (M.Map Word32 Word32 -> M.Map Word32 Word32)
        -> OccupiedSpace -> OccupiedSpace
 mapOS f (OccupiedSpace m) = OccupiedSpace $ f m 
 
 unOut :: ParseOutput a -> a
 unOut (ParseOutput _ _ a) = a 
-
 
 logSuccess :: forall a. IsCC a => ParseOutput a -> ReaderT Driver IO (ParseOutput a)
 logSuccess x@(ParseOutput l s a) = ask >>= \e -> do 

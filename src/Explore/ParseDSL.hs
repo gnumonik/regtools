@@ -24,7 +24,7 @@ import Data.Constraint
 import qualified Data.ByteString.Char8 as BC
 import Control.Lens (over, _1,  _2, view, (^.), Ixed (ix), (^?), set)
 import qualified Data.Text.IO as TIO
-
+import qualified Data.Text.Encoding as TE 
 {----------------------------------------------
  ----------------------------------------------
               Utilities / Type checking
@@ -35,7 +35,12 @@ import qualified Data.Text.IO as TIO
 insertVar :: forall a. PrettyRefl a => TypedVar (a :: DSLType) -> Context -> Either String Context 
 insertVar tv@(MkTypedVar txt) cxt = case M.lookup txt (cxt ^. tyCxt) of
   Nothing -> Right $ over tyCxt (M.insert txt (Some $ MkTypeDict $ sing @a)) cxt 
-  Just (Some (MkTypeDict t'))  -> case decideEquality t' (sing @a) of 
+  Just (Some (MkTypeDict t'))  -> Left $  "Error: Attempted to assign the variable "
+                                       <> T.unpack txt 
+                                       <> ", but it was already assigned! (Can't assign twice.)"
+    
+    
+    {-- case decideEquality t' (sing @a) of 
     Nothing -> Left $ "Type mismatch! The variable " 
                     <>T.unpack txt
                     <> " was previously assigned a value of type "
@@ -43,34 +48,34 @@ insertVar tv@(MkTypedVar txt) cxt = case M.lookup txt (cxt ^. tyCxt) of
                     <> " but is being used as a variable of type "
                     <> (show . fromSing $ sing @a)
                     <> " in the present context."
-    Just Refl -> Right cxt 
+    Just Refl -> Right cxt --}
 
 -- | Type checker for assignments  
 mkVar :: forall a. PrettyRefl a => Sing (a :: DSLType) -> T.Text -> DSLParser (TypedVar a) 
 mkVar sA txt 
   = let tv = withSingI sA $ MkTypedVar @a txt
     in insertVar tv  <$!>  lift ST.get >>= \case 
-      Left err -> fail err 
-      Right cxt -> lift ( (ST.modify . const) cxt) >> pure tv 
+        Left err -> fail err 
+        Right cxt -> lift ( (ST.modify . const) cxt) >> pure tv 
 
 -- | Type checker for argument variables 
 checkVar :: forall (a :: DSLType) 
           . T.Text  -> Sing a -> DSLParser (Either String (TypedVar a)) 
 checkVar  txt sB = lift (ST.gets $ view tyCxt) >>= \cxt -> 
   case M.lookup txt cxt of
-    Nothing -> pure . Left $ "Error: " 
-                          <> "The variable " 
-                          <> T.unpack txt
-                          <> "has not been defined!" 
+    Nothing -> fail $ "Error: " 
+                    <> "The variable " 
+                    <> T.unpack txt
+                    <> "has not been defined!" 
     Just (Some (MkTypeDict sX)) -> case decideEquality sB sX of 
         Just Refl -> withSingI sB $ pure . Right . MkTypedVar $ txt 
-        Nothing   -> pure . Left $ "Error: Type mismatch! "
-                                 <> "The variable "
-                                 <> T.unpack txt
-                                 <> " is being used as type "
-                                 <> (show . fromSing $ sB)
-                                 <> " but was previously assigned to a value of type "
-                                 <> (show . fromSing $ sX) 
+        Nothing   -> fail $ "Error: Type mismatch! "
+                          <> "The variable "
+                          <> T.unpack txt
+                          <> " is being used as type "
+                          <> (show . fromSing $ sB)
+                          <> " but was previously assigned to a value of type "
+                          <> (show . fromSing $ sX) 
 
 lookupType :: T.Text -> DSLParser (Maybe (Some TypeDict))
 lookupType txt = lift (ST.gets $ view tyCxt) >>= \cxt -> pure $ M.lookup txt cxt 
@@ -129,7 +134,9 @@ cmd = label "A command" $
              ,cmdPrint 
              ,cmdWriteJSON 
              ,cmdHash
-             ,cmdShowType]
+             ,cmdShowType
+             ,cmdPrintStr
+             ,cmdCheckHash]
  where 
   cmdShowType = do 
     tk (CmdTok ShowTypeTok) 
@@ -169,6 +176,16 @@ cmd = label "A command" $
               "Error in `writeHash` command: " 
               <> "Only Registry Keys, Lists of Registry Keys,"
               <> " and Lists of Registry Values can be hashed.") :: DSLParser DSLCommand 
+
+  cmdPrintStr = do 
+    tk (CmdTok PrintStrTok)
+    LitString msg <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+    pure $ PRINTSTR msg 
+
+  cmdCheckHash = do 
+    tk (CmdTok CheckHashTok)
+    LitString fPath <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+    pure $ CHKHASH (T.unpack fPath) 
 
 
 {----------------------------------------------
@@ -232,13 +249,14 @@ ifThen = do
 
 assign :: DSLParser (Some DSLExp)
 assign = do 
+  tk Let 
   Name n <- satisfy (\case {Name _ -> True ; _ -> False})
-  tk LArrow
-  qExp >>= \case 
-    Some exp -> case expSing exp of 
+  tk Equal
+  dslExp >>= \case 
+    (Some exp) -> case expSing exp of 
       sF -> do 
         tv <-  withDict (expDict exp) mkVar sF n 
-        pure . Some $ Assign exp (withSingI sF $ MkTypedVar n)
+        pure . Some $ Assign exp tv
 
 -- | this is only possible w/ singletons, ty dr. eisenberg 
 qExp :: DSLParser (Some DSLExp)
@@ -280,24 +298,24 @@ qExp = choice [try varQuery,rootQuery]
 
       (SomeQB x:xs) -> case assertPretty (fst $ qbSing x) of
           dL  -> case qbDict x of 
-            dR ->  case withDict dL $ withDict dR $ go ( liftCQB x) xs of 
+            dR ->  case withDict dL $ withDict dR $ compQB ( liftCQB x) xs of 
               Left err -> fail err 
               Right (SomeQB z) -> case qbSing z of 
                 (sL,sR) -> checkVar nm sL >>= \case 
                   Left err -> fail err 
                   Right tv -> pure $ Some (VarQuery tv z)
-   where 
-     go :: forall a b. (PrettyRefl a, PrettyRefl b) => CompositeQB a b -> [SomeQB] -> Either String SomeQB 
-     go cqb []            = Right $ SomeQB (COMPOSED cqb) 
-     go cqb (SomeQB x:xs) = case cqbSing cqb of 
-       (s,e_) -> case qbSing x of 
-         (s_,e) -> case decideEquality e_ s_ of 
-           Just Refl -> case withDict (qbDict x) composeQB cqb x of 
-             blah -> case cqbDict blah of 
-               (Dict,Dict) -> go blah xs
-           Nothing -> let t1Str = show . fromSing $ e_ 
-                          t2Str = show . fromSing $ s_
-                      in  Left $ "Error: Couldn't match " <> t1Str <> " with " <> t2Str <> " in query expression"
+
+compQB :: forall a b. (PrettyRefl a, PrettyRefl b) => CompositeQB a b -> [SomeQB] -> Either String SomeQB 
+compQB cqb []            = Right $ SomeQB (COMPOSED cqb) 
+compQB cqb (SomeQB x:xs) = case cqbSing cqb of 
+  (s,e_) -> case qbSing x of 
+    (s_,e) -> case decideEquality e_ s_ of 
+      Just Refl -> case withDict (qbDict x) composeQB cqb x of 
+        blah -> case cqbDict blah of 
+          (Dict,Dict) -> compQB blah xs
+      Nothing -> let t1Str = show . fromSing $ e_ 
+                     t2Str = show . fromSing $ s_
+                in  Left $ "Error: Couldn't match " <> t1Str <> " with " <> t2Str <> " in query expression"
 
 {----------------------------------------------
  ----------------------------------------------
@@ -318,10 +336,23 @@ someQB  = choice [
       , someConcatMap 
       , someExpand]
  where
+
     filePath :: DSLParser FilePath 
     filePath = do 
         LitString fPath <- satisfy (\case {LitString _ -> True ; _ -> False})
         pure . T.unpack $ fPath 
+
+    composedQuery :: DSLParser SomeQB
+    composedQuery = do 
+      qbs <- between (tk LParen) (tk RParen) (someQB `sepBy1` tk Pipe)
+      case qbs of 
+        []            -> fail "Empty query expression"
+        [x]           -> pure x  
+        (SomeQB x:xs) -> case assertPretty (fst $ qbSing x) of
+          dL  -> case qbDict x of 
+            dR ->  case withDict dL $ withDict dR $ compQB ( liftCQB x) xs of 
+              Left err -> fail err 
+              Right sqb -> pure sqb 
 
     someVals = do 
       tk (QBTok Vals)
@@ -346,13 +377,12 @@ someQB  = choice [
 
     someMatchValData = do 
       tk (QBTok MatchValData)
-      LitString n1 <- satisfy (\case {LitString _ -> True ; _ -> False}) 
-      let n1' = BC.pack . T.unpack $ n1
-      pure . SomeQB $ MATCHVALDATA n1'  
+      LitString n <- satisfy (\case {LitString _ -> True ; _ -> False}) 
+      pure . SomeQB $ MATCHVALDATA n
 
     someMap = do 
       tk (QBTok Map)
-      SomeQB qb <- between (tk LParen) (tk RParen) someQB 
+      SomeQB qb <- composedQuery -- between (tk LParen) (tk RParen) someQB 
       case (qbDict1 qb, qbDict qb) of 
         (Dict,Dict) -> pure . SomeQB $ MAP qb
 
@@ -360,7 +390,7 @@ someQB  = choice [
     someSelect :: DSLParser SomeQB 
     someSelect = do 
       tk (QBTok Select)
-      SomeQB qb <- between (tk LParen) (tk RParen) someQB 
+      SomeQB qb <- composedQuery -- between (tk LParen) (tk RParen) someQB 
       case qbSing qb of 
           (_,SBOOL) -> withDict (qbDict1 qb) $ pure . SomeQB $ SELECT qb 
           _ -> fail "Type mismatch in `select` function"
@@ -368,7 +398,7 @@ someQB  = choice [
     someConcatMap :: DSLParser SomeQB 
     someConcatMap = do 
       tk (QBTok ConcatMap)
-      SomeQB qb <- between (tk LParen) (tk RParen) someQB 
+      SomeQB qb <- composedQuery -- between (tk LParen) (tk RParen) someQB 
       case qbSing qb of 
           (_,SLIST x) ->  pure . SomeQB $ withDict (qbDict1 qb) $ withDict (qbDict qb) $ CONCATMAP qb 
           _ -> fail "Type mismatch in `concatMap` function"

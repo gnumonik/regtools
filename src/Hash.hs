@@ -13,10 +13,10 @@ import Data.Serialize
 
 hashKey :: RegistryKey -> KeyHash 
 hashKey rKey = KeyHash nm hashTime hashVals where 
-  path =  (<> "\\") . intercalate "\\" . map C8.unpack  $ (rKey ^. keyParents)
+  path =   intercalate "\\" . map C8.unpack  $ (rKey ^. keyParents)
   nm   = case rKey ^. keyParents of 
-    [] -> rootPath 
-    _  -> T.pack $ path <> (C8.unpack $ rKey ^. keyName )
+    [] -> "<$ROOT$>"
+    _  -> T.pack $ path <> "\\" <>(C8.unpack $ rKey ^. keyName )
 
   hashTime = encodeHex $ hash (C8.pack . prettyTime $ rKey ^. keyTime)
 
@@ -48,3 +48,9 @@ valToBS = \case
   REG_FULL_RESOURCE_DESCRIPTOR bs   -> bs 
   REG_RESOURCE_REQUIREMENTS_LIST bs -> bs 
   REG_QWORD w                       -> runPut (putWord64le w)
+
+{--
+> someKeys <- query root (subkeys | select (keyNameHas "mhtml"))
+
+> writeJSON someKeys "/home/gsh/testJSON"
+--}

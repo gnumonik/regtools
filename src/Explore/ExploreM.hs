@@ -24,7 +24,6 @@ import Text.Hex
 import Data.List (intercalate)
 import Data.ByteString.Char8 (unpack)
 
-
 getPrinter :: ExploreM Printer 
 getPrinter = unliftE ask >>= pure . view _2 
 

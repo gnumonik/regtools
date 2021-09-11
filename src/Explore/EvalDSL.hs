@@ -40,6 +40,7 @@ import Data.Aeson ((.=))
 import Text.Pretty.Simple (pShow)
 import Text.PrettyPrint.Leijen
     ( Pretty(pretty), displayS, renderPretty )
+import Explore.Optics.NK (checkHash, checkValHash)
 type ValMap = M.Map T.Text DSLValue 
 
 data DSLValue :: Type where 
@@ -48,8 +49,6 @@ data DSLValue :: Type where
 type EvalM a = ST.StateT ValMap IO  a
 
 data ABORT = ABORT deriving (Show, Eq)
-
-
 
 lookupVal :: forall a. (String -> IO ()) -> TypedVar a -> EvalM (Either ABORT (Dict (PrettyRefl a),DSLToHask a, Sing a))
 lookupVal printer tv@(MkTypedVar txt) = get >>= \vals -> 
@@ -93,10 +92,36 @@ evalDSL printer hData exp = evalPure exp >>= \case
       Assign e (MkTypedVar txt) -> evalPure e >>= \case 
         Left ABORT -> pure . Left $ ABORT 
         Right v    ->  do 
-                let sF = expSing e 
-                modify (withDict (expDict e) $ M.insert txt (MkDSLValue sF v))
-                pure . Right $ v
-
+                vMap <- get 
+                case M.lookup txt vMap of 
+                  Nothing -> do 
+                    let sF = expSing e 
+                    modify (withDict (expDict e) $ M.insert txt (MkDSLValue sF v))
+                    pure . Right $ v
+                  Just (MkDSLValue vS v') -> 
+                    case decideEquality vS (expSing e) of 
+                      Just Refl -> do 
+                          liftIO . printer . T.unpack 
+                                          $ "WARNING: The variable " 
+                                          <> txt 
+                                          <> " was used in an assignment despite already having a value"
+                                          <> " assigned to it. Variables can only be assigned a value once"
+                                          <> " in a plugin or the repl (i.e they are immutable). The second"
+                                          <> " assignment has been ignored and " <> txt <> " still has the value"
+                                          <> " it was first assigned. (This is a WARNING if the attempted re-assignment"
+                                          <> " was to a value of the same type but is an error if the types differ.)"
+                          pure . Right $ v' 
+                      Nothing -> do 
+                          liftIO . printer . T.unpack 
+                                          $ "FATAL TYPE ERROR!!!!\n" 
+                                          <> txt 
+                                          <> " was used in an assignment despite already having a value"
+                                          <> " of a different type assigned to it. Variables can only be assigned a value once"
+                                          <> " in a plugin or the shell (i.e they are immutable). " 
+                                          <> " The current shell session or plugin will now exit. "
+                                          <> " (This is necessary to preserve the soundness of the type system.)"
+                          pure . Left $ ABORT                    
+                        
       IfThen e1 e2 e3 -> do 
         evalPure e1 >>= \case 
           Left ABORT -> pure . Left $ ABORT 
@@ -172,6 +197,10 @@ evalDSL printer hData exp = evalPure exp >>= \case
                 . pretty
                 $ a) >> pure Nothing 
 
+        PRINTSTR txt -> liftIO (printer $ T.unpack txt <> "\n") >> pure Nothing
+
+        CHKHASH fPath -> liftIO (checkKeyHash printer hData fPath) >> pure Nothing 
+
 type PluginM = ReaderT HiveData (ST.StateT ValMap IO)
 
 type HivePath = FilePath 
@@ -223,9 +252,20 @@ _execPlugin f (Some x:xs) = do
         lift . ST.modify' $ const newVals 
         _execPlugin f xs 
 
-
-
-
-
-
+checkKeyHash :: Printer -> HiveData -> FilePath -> IO () 
+checkKeyHash f hData hshPath = do 
+  rawHashFile <- BS.readFile hshPath 
+  case A.decodeStrict @KeyHashFileObj rawHashFile of  
+    Nothing -> f "Error! Could not deserialize the hash file JSON"
+    Just hashFile -> case hashFile of 
+      OneKey kh -> do 
+        runReaderT (runE $ checkHash kh) (hData,f)
+        pure ()  
+      ManyKeys khs -> do 
+        runReaderT (runE $ mapM checkHash khs) (hData,f) 
+        pure () 
+      ManyVals vls -> do 
+        runReaderT (runE $ mapM checkValHash vls) (hData,f)
+        pure ()
+  f "\nHash check complete (If you didn't get any output then everything matched).\n"
 

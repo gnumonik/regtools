@@ -37,7 +37,8 @@ dslToks = choice [
   , try qbTok 
   , try cmdTok
   , pipe
-  , lArrow 
+  , let_ 
+  , equal_
   , lParen 
   , rParen
   , lCurly 
@@ -57,14 +58,16 @@ testLex = parseTest (some dslToks)
 
 cmdTok :: Lexer 
 cmdTok = choice [
-    f "help" HelpTok 
-  , f "exit" ExitTok
-  , f "load" LoadTok
-  , f "run"  RunTok 
+  --  f "help" HelpTok 
+    f "exit" ExitTok
+  --, f "load" LoadTok
+ -- , f "run"  RunTok 
   , f "writeJSON" WriteJSONTok 
   , f "print" PrintTok 
   , f "writeHash" WriteHashTok
   , f "showType" ShowTypeTok
+  , f "printStr" PrintStrTok
+  , f "checkHash" CheckHashTok
   ]
  where 
     f :: T.Text -> CmdToken -> Lexer 
@@ -98,9 +101,6 @@ lexChar_ c = void . lex $ char c
 query :: Lexer 
 query = lexStr_ "query" $>  Query 
 
-lArrow :: Lexer 
-lArrow = lexStr_ "<-" $> LArrow 
-
 pipe :: Lexer 
 pipe = choice [try pipe2, pipe1]
   where 
@@ -119,6 +119,11 @@ if_ = lexStr_ "if" $> If
 then_ = lexStr_ "then" $> Then 
 
 else_ = lexStr_ "else" $> Else  
+
+let_ = lexStr_ "let" $> Let 
+
+equal_ :: Lexer 
+equal_ = lexChar_ '=' $> Equal
 
 lParen :: Lexer 
 lParen = lexChar_ '(' $> LParen 

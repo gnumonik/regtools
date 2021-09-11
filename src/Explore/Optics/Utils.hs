@@ -2,6 +2,17 @@ module Explore.Optics.Utils where
 
 import Data.Word (Word32)
 import Data.List 
+import Text.Megaparsec 
+import Text.Megaparsec.Char 
+import qualified Data.Text as T 
+import Data.Void 
+
+type Parser = Parsec Void T.Text 
+
+parseKeyPath :: Parser [T.Text]
+parseKeyPath = map T.pack <$> some (satisfy (/= '\\')) `sepBy1` char '\\'
+
+
 
 isAsciiFlag :: Word32 -> Bool 
 isAsciiFlag x = x == 0x0020 

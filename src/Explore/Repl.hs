@@ -43,7 +43,7 @@ initRepl fPath = do
   !hData <-  readHive fPath
   t2 <- getCurrentTime 
   let diffTime = diffUTCTime t2 t1  
-  putStrLn  $ "Hive Loaded in " <> show diffTime <> " seconds"
+  putStrLn  $ "Hive Loaded in " <> show diffTime <> " seconds\n"
   let vMap = M.empty
   putStrLn "Enter a query or command." 
   ST.evalStateT (runReaderT (runInputT defaultSettings loop) hData) (vMap,emptyContext)  
@@ -64,12 +64,12 @@ runLine line  = gets snd >>= \cxt1 -> case runParser (some dslToks) "" line of
 
   Right lexed -> case ST.runState (runParserT dslExp "" lexed) cxt1 of
 
-    (Left err,cxt)  ->  
+    (Left err,_)  ->  
       outputStrLn ("\n" <> errorBundlePretty err) >> pure Nothing 
 
     (Right (Some expr), cxt) -> do 
       (e :: HiveData) <- look 
-      (s,_cxt) <- get 
+      s <- gets fst  
       printer <- getExternalPrint 
       (merr,s') <- liftIO $ ST.runStateT (evalDSL printer e expr) s
       case merr of 
@@ -81,8 +81,8 @@ runLine line  = gets snd >>= \cxt1 -> case runParser (some dslToks) "" line of
 -- Move this somewhere else. Maybe?
 type HashPath = FilePath 
 
-checkKeyHash :: HivePath -> HashPath -> IO ()
-checkKeyHash hvPath hshPath = do 
+checkKeyHash_ :: HivePath -> HashPath -> IO ()
+checkKeyHash_ hvPath hshPath = do 
   putStrLn "\nInitializing RegTools in Hash Checking Mode\n"
   putStrLn $ "Loading Registry Hive File @" <> hvPath <> "\n"
   t1 <- getCurrentTime 
@@ -92,17 +92,30 @@ checkKeyHash hvPath hshPath = do
   putStrLn  $ "\nHive Loaded in " <> show diffTime <> " seconds"
            <> "\nLoading key hash file @" <> hshPath
            <> "\nChecking hashes... "
-  rawHashFile <- BS.readFile hshPath 
-  case A.decodeStrict @KeyHashFileObj rawHashFile of  
-    Nothing -> putStrLn "Error! Could not deserialize the hash file JSON"
-    Just hashFile -> case hashFile of 
-      OneKey kh -> do 
-        runReaderT (runE $ checkHash kh) (hData,putStrLn)
-        pure ()  
-      ManyKeys khs -> do 
-        runReaderT (runE $ mapM checkHash khs) (hData,putStrLn) 
-        pure () 
-      ManyVals vls -> do 
-        runReaderT (runE $ mapM checkValHash vls) (hData,putStrLn)
-        pure ()
-  putStrLn "\nHash check complete."
+  checkKeyHash putStrLn hData hshPath 
+
+
+
+
+{--
+
+OneKey
+    ( KeyHash
+        { _fqKeyName = "S-1-5-21-3199533274-2294187411-1904285961-1001_Classes\.mhtml"
+        , _timeHash = "eb2c05ce6611f5e54cd3197b2a9ec4da"
+        , _valuesHash =
+            [ ValHash
+                { _vHashName = "Content Type"
+                , _vHashPath = "S-1-5-21-3199533274-2294187411-1904285961-1001_Classes//.mhtml"
+                , _vHashData = "fb23d1a8f41117286e6df7ce5733aaca"
+                }
+            , ValHash
+                { _vHashName = ""
+                , _vHashPath = "S-1-5-21-3199533274-2294187411-1904285961-1001_Classes//.mhtml"
+                , _vHashData = "3d75c97a6ec0a48a1619199645e35e3f"
+                }
+            ]
+        }
+    )
+
+--}

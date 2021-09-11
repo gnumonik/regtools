@@ -28,7 +28,7 @@ import Hash (hashKey, hashVal)
 import qualified Data.List.NonEmpty as NE 
 import qualified Data.Map.Strict as M
 import Data.List (find)
-
+import qualified Data.Text.Encoding as TE
 
 stblSubkeys :: MFold RegistryKey [RegistryKey]
 stblSubkeys = mkMonadicFold go 
@@ -96,8 +96,6 @@ allSubkeys = mkMonadicFold $ \nk -> do
   vol  <- fromMaybe [] <$> nk ^!? volSubkeys
   pure $ stbl <> vol 
 
-
-
 type Depth = Word32
 
 -- | Takes a depth argument and produces a RegistryKey data type 
@@ -142,57 +140,54 @@ kvs depth = mkMonadicFold runKVs
                   Nothing -> pure Empty 
                   Just ne' -> pure $ Subkeys ne' 
 
-
 allKVs :: MFold RegistryKey RegistryKey
 allKVs = kvs (maxBound :: Word32)
 
 -- | Take a list of Strings representing a key path 
 --   and search the registry for the key at the 
 --   designated path  
-
--- **********
--- **********
--- CHANGE THIS TO: MFold RegistryKey RegistryKey
-keyPath :: [String] -> Query RegistryKey 
+keyPath :: [String] -> MFold RegistryKey [RegistryKey] 
 keyPath kpath = mkMonadicFold (runKeyPath kpath) 
   where 
-    runKeyPath :: [String] -> HiveData -> ExploreM RegistryKey
+    runKeyPath :: [String] -> RegistryKey -> ExploreM [RegistryKey]
     runKeyPath [] _ = qErr $ QueryError 0 "Error: Empty key path"
-    runKeyPath xs@(z:zs) hData
-      | z == rootPath && not (null zs) = runKeyPath zs hData 
+    runKeyPath xs@(z:zs) rKey
+      | z == "<$ROOT$>" && not (null zs) = look >>= \hData ->  hData ^!? rootCell >>= \case 
+          Nothing -> qErr $ QueryError 0 "Error: Root cell not found in Key Path lookup query" 
+          Just root -> go root zs 
       
-      | z == rootPath && null zs = hData ^!? rootCell >>= \case 
+      | z == "<$ROOT$>" && null zs = look >>= \hData ->  hData ^!? rootCell >>= \case 
           Nothing -> qErr $ QueryError 0 "Error: Root cell not found in Key Path lookup query" 
-          Just root -> pure root 
+          Just root -> pure [root] 
 
-      | otherwise = hData ^!? rootCell >>= \case 
-          Nothing -> qErr $ QueryError 0 "Error: Root cell not found in Key Path lookup query" 
-          Just root -> do 
-            rKey <- mkRKey hData (root ^. keyNode) 
-            go rKey xs 
+      | otherwise = go rKey xs 
 
-    go :: RegistryKey -> [String] -> ExploreM RegistryKey
-    go rk []       = pure rk 
+    go :: RegistryKey -> [String] -> ExploreM [RegistryKey]
+    go rk []       = pure [rk] 
     go rk@(RegistryKey _ _ _ _ _ nk) (kp:kps) 
       = rk ^!? (allSubkeys . selectFirst (\n -> n ^. (keyNode . keyString ) == BC.pack kp)) >>= \case 
           Just nextNK -> go nextNK kps 
-          Nothing -> qErr . QueryError 0 $ T.pack ("The key: " <> kp <> " was not found in the volatile or stable subkeylist of its designated parent")
+          Nothing -> do 
+            f <- getPrinter 
+            liftIO . f $ "The key: [" <> kp <> "] was not found in the volatile or stable subkeylist of its designated parent"
+                       <> "\n(I.e. the `key` query returned an empty list."
+            pure []
 
 checkHash :: KeyHash ->  ExploreM ()
 checkHash kHash  = do
-  hData <- look 
+  root <- getRootCell 
   f <- getPrinter   
   let kPath = toKeyPath . T.unpack $ kName 
-  hData ^!? keyPath kPath >>= \case 
-    Nothing -> liftIO . f $ "The Key @" <> show kPath <> " cannot be found in the Registry"
-    Just rKey -> do 
+  root ^!? keyPath kPath >>= \case 
+    Just [rKey] -> do 
       let kHash' = hashKey rKey
       if kHash == kHash' 
         then pure ()
-        else liftIO $ diffHash f kHash kHash'  
+        else diffHash f kHash kHash'
+    _ -> liftIO . f $ "The Key @" <> show kPath <> " cannot be found in the Registry"  
  where 
-   kName = kHash ^. fqKeyName
-   diffHash :: (String -> IO ()) -> KeyHash -> KeyHash -> IO ()
+   kName = kHash ^. hshKeyName
+   diffHash :: (String -> IO ()) -> KeyHash -> KeyHash -> ExploreM ()
    diffHash f k1 k2 = diffTime >> diffVals (k1 ^. valuesHash) (k2 ^. valuesHash)
     where 
       diffTime = if (k1 ^. timeHash) /= (k2 ^. timeHash)
@@ -201,21 +196,19 @@ checkHash kHash  = do
 
       diffVals vxs vys 
         = if (k1 ^. valuesHash) /= (k2 ^. valuesHash)
-          then liftIO . f . T.unpack $ kName <> " - " <> "Values changed"
-                 else pure ()
+            then do 
+              liftIO . f . T.unpack $ kName <> " - " <> "Values changed"
+              liftIO . f $ ""
+              mapM_ checkValHash vxs 
+            else pure ()
 
 -- this is unnecessarily inefficient and should be fixed 
 checkValHash :: ValHash -> ExploreM () 
 checkValHash vh = do 
   f     <- getPrinter 
-  hData <- look 
-  hData ^!? keyPath (toKeyPath . T.unpack $ vh ^. vHashPath) >>= \case  
-    Nothing  -> liftIO . f $ "The parent key of the value named " 
-                         <> T.unpack (vh ^. vHashName) 
-                         <> " located at "
-                         <> T.unpack (vh ^. vHashPath) 
-                         <> " no longer exists"
-    Just rKey -> liftIO $ do 
+  root <- getRootCell 
+  root ^!? keyPath (toKeyPath . T.unpack $ vh ^. vHashPath) >>= \case  
+    Just [rKey] -> liftIO $ do 
       case find (\x -> x ^. vHashName == vh ^. vHashName) (map hashVal $ rKey ^. keyValues) of 
         Nothing -> f $ "The value named " 
                     <> T.unpack (vh ^. vHashName) 
@@ -230,12 +223,15 @@ checkValHash vh = do
                              <> T.unpack (vh ^. vHashName)
                              <> " located at "
                              <> T.unpack (vh ^. vHashPath) 
-                             <> "has changed." 
+                             <> " has changed." 
+    _  -> liftIO . f $ "The parent key of the value named " 
+                      <> T.unpack (vh ^. vHashName) 
+                      <> " located at "
+                      <> T.unpack (vh ^. vHashPath) 
+                      <> " no longer exists"
 
 mkSubKeys :: [RegistryKey] -> SubkeyData 
-mkSubKeys rks = case NE.nonEmpty rks of 
-  Nothing -> Empty 
-  Just ne -> Subkeys ne 
+mkSubKeys rks = maybe Empty Subkeys (NE.nonEmpty rks)
 
 filterSubkeys :: MFold RegistryKey Bool -> MFold RegistryKey RegistryKey 
 filterSubkeys p = mkMonadicFold go 
@@ -270,23 +266,25 @@ nameContains bs rk = containsSubstring bs (_keyNode rk ^. keyString)
 valNameContains :: BS.ByteString -> FQValue -> Bool 
 valNameContains bs fqVal = containsSubstring bs (fqVal ^. fqValName)
 
-valDataContains :: BS.ByteString -> FQValue -> Bool 
+valDataContains :: T.Text -> FQValue -> Bool 
 valDataContains dataStr fqVal 
   = go (fqVal ^. fqValData)
  where 
     go :: Value -> Bool
     go = \case 
         REG_NONE bs                       -> f bs 
-        REG_SZ bs                         -> f bs 
-        REG_EXPAND_SZ bs                  -> f bs 
+        REG_SZ bs                         -> u16 bs 
+        REG_EXPAND_SZ bs                  -> u16 bs 
         REG_BINARY bs                     -> f bs
         REG_DWORD w                       -> f (runPut . putWord32le $ w)
         REG_DWORD_LITTLE_ENDIAN w         -> f (runPut . putWord32le $ w)
         REG_DWORD_BIG_ENDIAN w            -> f (runPut . putWord32be $ w)
-        REG_LINK bs                       -> f bs 
+        REG_LINK bs                       -> u16 bs 
         REG_MULTI_SZ bs                   -> f bs 
         REG_RESOURCE_LIST bs              -> f bs 
         REG_FULL_RESOURCE_DESCRIPTOR bs   -> f bs 
         REG_RESOURCE_REQUIREMENTS_LIST bs -> f bs 
         REG_QWORD w                       -> f (runPut . putWord64le $ w)
-    f = containsSubstring dataStr
+    f = containsSubstring (TE.encodeUtf8 dataStr)
+
+    u16 = containsSubstring (TE.encodeUtf16LE dataStr)

@@ -38,8 +38,8 @@ type PluginArgs = [Some TypedVar]
 
 
 -- The Command Line args version 
-runPlugin_ :: PluginPath -> OutputPath -> HivePath -> IO ()
-runPlugin_ pPath outPath hPath = do
+runPlugin_ :: PluginPath -> HivePath -> IO ()
+runPlugin_ pPath hPath = do
   pluginRaw <- TIO.readFile pPath
   case lexPlugin pluginRaw of
     Left err -> putStrLn (errorBundlePretty err)

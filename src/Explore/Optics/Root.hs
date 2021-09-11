@@ -19,23 +19,16 @@ import Control.Monad.IO.Class
 import Data.Maybe (fromMaybe)
 import Control.Monad.Errors.Class
 import qualified Data.Sequence as S 
-import qualified Data.ByteString.Char8 as C8 
-
+import qualified Data.ByteString.Char8 as C8
 
 mkRKey :: HiveData -> NKRecord -> ExploreM RegistryKey
 mkRKey hData nk = do 
       let keyStr = nk ^. keyString 
       let timeStamp = nk ^. nkTimeStamp
       let parentPath = hData ^. (getParentPath nk)
-      let valPath    = BS.concat parentPath <> C8.pack "//" <> keyStr 
+      let valPath    = BS.concat parentPath <> C8.pack "\\" <> keyStr 
       myVals <- fromMaybe [] <$> nk ^!? (vks . concatMapped (namedVal valPath))
-      case parentPath of 
-          [] -> pure $ 
-            RegistryKey "<$ROOT$>" [] timeStamp myVals Truncated nk 
-
-          _  -> pure $ 
-            RegistryKey keyStr parentPath timeStamp myVals Truncated nk
-
+      pure $ RegistryKey keyStr parentPath timeStamp myVals Truncated nk
 
 -- | Requires a type application.
 regItem :: forall a. IsCC a => Word32 -> Query a 
@@ -54,15 +47,16 @@ fqVals = mkMonadicFold go
 
 -- | Gets the root cell of the registry. 
 rootCell :: Query RegistryKey 
-rootCell = mkMonadicFold go 
-  where 
-    go :: HiveData -> ExploreM RegistryKey 
-    go hData = do 
-      let nk = hData ^? (hEnv . parsed . ix (hData ^. (hEnv . offset)) . content @NKRecord)
-      printer <- getPrinter 
-      case nk of 
-        Nothing -> report . S.singleton $ QueryError 0 "Error: Root Cell Not Found"
-        Just aNK -> mkRKey hData aNK 
+rootCell = mkMonadicFold (const getRootCell) 
+
+getRootCell :: ExploreM RegistryKey 
+getRootCell = do 
+  hData <- look 
+  let nk = hData ^? (hEnv . parsed . ix (hData ^. (hEnv . offset)) . content @NKRecord)
+  printer <- getPrinter 
+  case nk of 
+    Nothing -> report . S.singleton $ QueryError 0 "Error: Root Cell Not Found"
+    Just aNK -> mkRKey hData aNK 
 
 type Path = BS.ByteString 
 
@@ -74,15 +68,16 @@ namedVal path = mkMonadicFold go
             in if checkVKPointer (vk ^. dataLength)
             then look >>= \hData -> 
               hData ^!? regItem @Value (vk ^. dataPtr) >>= \case 
-                Nothing -> pure  $ []
-                Just vx -> pure  $ [FQValue valNm vx path vk]  
+                Nothing -> pure []
+                Just vx -> pure [FQValue valNm vx path vk]  
 
             else case runGet (valueData 4 (vk ^. valueType)) (runPut . putWord32le $ vk ^. dataPtr) of 
                   Left err -> do 
                     printer <- getPrinter 
                     liftIO $ printer err
-                    pure $ []
-                  Right v  -> pure  $ [FQValue valNm v path vk]  
+                    pure []
+
+                  Right v  -> pure [FQValue valNm v path vk]  
                   
 getParentPath :: NKRecord -> Getter HiveData [BS.ByteString] 
 getParentPath nk = to runPath  
@@ -95,8 +90,14 @@ getParentPath nk = to runPath
       | w == (maxBound :: Word32) || w == 0 = reverse acc 
       | otherwise = case hData ^? (hiveCell w . content @NKRecord) of 
           Nothing -> reverse acc 
-          Just nk -> let acc' = (nk ^. keyString):acc 
+          Just nk -> let nextOffset  = (nk ^. nkOffset1)
+                         acc' = if parentExists nextOffset 
+                                then (nk ^. keyString):acc
+                                else (C8.pack "<$ROOT$>":acc) 
                      in go hData acc' (nk ^. nkOffset1)
+     where 
+      parentExists x = x /= (maxBound :: Word32) && x /= 0 
+
 -- | Get all value-record cells pointed to by the focused NKRecord 
 vks :: MFold NKRecord [VKRecord]
 vks = mkMonadicFold go 
@@ -141,18 +142,16 @@ findCell p  = mkMonadicFold go
           Nothing -> acc 
           Just a  -> if p a then (i,a):acc else acc 
 
-
 deadZones :: Word32 -> Query [(Word32,Word32)]
 deadZones  minSize = mkMonadicFold runDeadZones 
-
   where 
     runDeadZones :: HiveData -> ExploreM [(Word32,Word32)] 
-    runDeadZones hData =case occupied hData of 
+    runDeadZones hData = case occupied hData of 
         [] -> pure []
         (x:xs) -> pure $ (go hData) [] (snd x) xs
 
     occupied hData = hData ^. (hEnv . spaceMap . andThen (M.toList . getSpace))
-    
+
     go :: HiveData -> [(Word32,Word32)] -> Word32 -> [(Word32, Word32)] -> [(Word32,Word32)]
     go _ acc _ [] = acc 
     go hData acc lastEnd ((nextStart,nextEnd):rest) 

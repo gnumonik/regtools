@@ -1,19 +1,22 @@
 module Main where
 
-import Explore.Repl
+import Explore.Repl ( initRepl, checkKeyHash_ )
 import Lib (testhivepath)
-import Explore.Plugins 
-import Explore.CmdOpts 
-import Types 
+import Explore.Plugins ( runPlugin_ ) 
+import Explore.CmdOpts
+    ( getOpts,
+      ModeOptions(CHECKHASH, PLUGIN, SHELL),
+      Options(Options) ) 
 
 
 main :: IO ()
 main = do --initRepl testhivepath
   Options hivePath mOpts <- getOpts
   case mOpts of 
-    PLUGIN pluginPath outputPath ->
-      runPlugin_ pluginPath outputPath hivePath 
+    PLUGIN pluginPath  ->
+      runPlugin_ pluginPath  hivePath 
 
     SHELL -> initRepl hivePath 
 
-    CHECKHASH hashPath -> checkKeyHash hivePath hashPath 
+    CHECKHASH hashPath -> checkKeyHash_ hivePath hashPath 
+

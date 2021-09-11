@@ -69,7 +69,7 @@ qbSing = \case
   
   SUBKEYS           -> (SREGKEY,SLIST SREGKEY)
   
-  KEYPATH _         -> (SROOT,SREGKEY)
+  KEYPATH _         -> (SREGKEY,SLIST SREGKEY)
   
   MATCHKEYNAME _    -> (SREGKEY, SBOOL)
   
@@ -173,8 +173,6 @@ composeQB :: forall a b c
           -> CompositeQB a c 
 composeQB cqb qb = case qbSing qb of 
   (b,c) -> withSingI b $ withSingI c $ QBS cqb qb  
-
-             
 
 cqbSing :: forall a b. CompositeQB a b -> (Sing a, Sing b)
 cqbSing = \case 
