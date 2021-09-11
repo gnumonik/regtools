@@ -5,12 +5,27 @@
 
 packages:
 - completed:
-    hackage: row-types-1.0.1.0@sha256:62d274be07da06aafe2d94b58818234e89e53864d2f65956da2903784c0005a7,2865
+    size: 3727
+    url: https://github.com/gnumonik/monad-look/archive/e77014df54156ed84e79618a4645f8959aa16ab0.tar.gz
+    name: monad-look
+    version: 0.1.0.0
+    sha256: 514d44099a56ccf4f614b903e37972b5ba80e1ac003cf3af69436a51c99e9d78
     pantry-tree:
-      size: 931
-      sha256: 0982996f259a250f4524466af479a8ca90ff72b143a3b9095ace24b1c371c4d5
+      size: 524
+      sha256: a7155a4bac59f0851090e9fcfad55ee0f0057ce1bd1f79a8489c3b82768d65e3
   original:
-    hackage: row-types-1.0.1.0@sha256:62d274be07da06aafe2d94b58818234e89e53864d2f65956da2903784c0005a7,2865
+    url: https://github.com/gnumonik/monad-look/archive/e77014df54156ed84e79618a4645f8959aa16ab0.tar.gz
+- completed:
+    size: 6272
+    url: https://github.com/gnumonik/monad-errors/archive/4ba620e329d71837a58c77db2177cff882433cf7.tar.gz
+    name: monad-errors
+    version: 0.1.0.0
+    sha256: aba1fe9cb1f84ebce5b24c612570f328e7d9bbf204627ad8610f0609af4c1bae
+    pantry-tree:
+      size: 679
+      sha256: 3bedb35bd7ed824c4067fcac4cf8f75dd1af416832ff09e50b676b22efd6755f
+  original:
+    url: https://github.com/gnumonik/monad-errors/archive/4ba620e329d71837a58c77db2177cff882433cf7.tar.gz
 - completed:
     hackage: bytestring-encoding-0.1.1.0@sha256:1c3b97eb6345fd7153006211c8272215cd78bb0cf440c41185290822f1e3f2c2,1738
     pantry-tree:

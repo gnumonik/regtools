@@ -2,7 +2,11 @@
 
 At the moment this is **alpha** software. While everything appears to work (on my Windows 10 registry at least), there is no guarantee that it will work the registry hive you are examining. The binary format for the registry is not public, can change without notice, and may behave in ways that are not documented anywhere. 
 
-**At the moment regtools does not support deserializing `bd` or "Big Data" values.** None of the registry hives I have examined **have** any big data values as far as I can tell, so while it would be very easy to implement this, I need to find a registry file that definitely does contain them in order to test/develop the feature. 
+Known issues:
+
+ - **At the moment regtools does not support deserializing `bd` or "Big Data" values.** None of the registry hives I have examined **have** any big data values as far as I can tell, so while it would be very easy to implement this, I need to find a registry file that definitely does contain them in order to test/develop the feature. 
+ - Timestamps might be off by a number of leap seconds. Need to find a way to check this.
+ - The 
 
 # regtools
 
@@ -14,7 +18,7 @@ You should be able to compile + run `regtools` on any modern linux platform. It 
 
 `regtools` attempts to parse the entirety of a windows registry hive and load it into memory before running queries on it. You'll need at least as much free RAM (probably around 2x as much from rough htop guesstimation) as the size of the file you are loading. You *probably* have more than enough RAM, but don't try to run it on a toaster. 
 
-It scales pretty well with the number of cores you have. On my Ryzen 3900x, it takes about 3 seconds to deserialize a 45mb hive file with all 12 cores, and around 30 with only one core. 
+It scales pretty well with the number of cores you have. On my Ryzen 3900x, it takes about 3 seconds to deserialize a 45mb hive file with all 12 cores, and around 30 with only one core in GHCI. (I don't think GHCI compiles w/ optimizations so it will likely be faster than 30s on your machine if you somehow have a single core processor in 2021.)
 
 ### Installation 
 
@@ -132,10 +136,14 @@ But that's kind of ugly and the parentheses make it hard to read, so, alternativ
 ```
 
 One thing to note here is that the `regtools` scripting language is **strongly/statically typed**. If you don't know what the means (or are scared of types), don't worry! There are *only **5*** types: 
-     1) `REGKEY`, which represents a registry key  
-     2) `VAL`, which represents a registry value  
-     3) `BOOL` (i.e. True/False) 
-     4) `LIST`s, e.g. `LIST REGKEY` or `LIST VAL`. Lists in `regtools` must contain elements which are all the same type.
+
+1) `REGKEY`, which represents a registry key  
+
+2) `VAL`, which represents a registry value  
+
+3) `BOOL` (i.e. True/False) 
+
+4) `LIST`s, e.g. `LIST REGKEY` or `LIST VAL`. Lists in `regtools` must contain elements which are all the same type.
      
 The 5th type is called `EFFECT` and you can mostly ignore it. (If you're familiar with functional programming, it's equivalent to `()` in Haskell or `unit` in purescript or... I forget what it's called in Scala. `regtools` commands are just expressions that return `EFFECT`.) This is the return type of commands and exists for the purposes of keeping the internal type system coherent. 
 
@@ -588,8 +596,8 @@ Example:
 In the above example, both branches are *commands*, which have the special `EFFECT` type. You can use `if-then-else` expressions with things other than commands, but you will get an error if the branches differ in type. You probably don't need this unless you are writing plugins.
 
 ## Command Reference 
-
-Other than `print` and `showtype`, the other `regtools` commands are: 
+---------------------
+Other than `print` and `showType`, the other `regtools` commands are: 
 
 **Reminder: Commands and view functions are distinct from each other and cannot be used interchangable. E.g. this is WRONG!!!!!:** `query root (subkeys | print)`
 
