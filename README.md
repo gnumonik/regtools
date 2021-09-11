@@ -27,7 +27,7 @@ It scales pretty well with the number of cores you have. On my Ryzen 3900x, it t
 
 To install `regtools` you will first need a version of the Glasgow Haskell Compiler (GHC) and the Haskell Stack (stack) package manager. 
 
-It is highly suggested that you obtain a stack via the ghcup[https://www.haskell.org/ghcup/] Haskell installer. (Especially if you are on Arch Linux, I believe.) After you've installed, run `ghcup tui`, highlight any version of "Stack" that you see (if it doesn't appear, enter `t` to show all tools), then enter `i` to install.
+It is highly suggested that you obtain a copy of stack via the [ghcup](https://www.haskell.org/ghcup/) Haskell installer. (Especially if you are on Arch Linux, I believe.) After you've installed, run `ghcup tui`, highlight any version of "Stack" that you see (if it doesn't appear, enter `t` to show all tools), then enter `i` to install.
 
 Once you have that installed, clone the reposity and then: 
 
@@ -38,7 +38,7 @@ stack install
 
 You might want to go make a sandwich or something - it'll take a while to compile the dependencies. If you don't see any error messages when you get back, you should now have a copy of regtools installed to `~/.local/bin`. Either move the `regtools` binary to a directory on your path, or add `~/.local/bin` to your path. 
 
- (If you run into any issues with stack, check here[https://docs.haskellstack.org/en/stable/GUIDE/] for assistance.)
+ (If you run into any issues with stack, check [here](https://docs.haskellstack.org/en/stable/GUIDE/) for assistance.)
 
 ## Usage 
 
