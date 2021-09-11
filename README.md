@@ -1,6 +1,6 @@
 # Notice 
 
-At the moment this is **alpha** software. While everything appears to work (on my Windows 10 registry at least), there is no guarantee that it will work the registry hive you are examining. The binary format for the registry is not public, can change without notice, and may behave in ways that are not documented anywhere. 
+At the moment this is **alpha** software. While it passes basic unit tests and everything *appears* to work (on my Windows 10 registry at least), there is no guarantee that it will work with the registry hive you are examining. The binary format for the registry is not public, can change without notice, and may behave in ways that are not documented anywhere. If you run into an issue, *please* submit a bug report. 
 
 Known issues:
 
@@ -8,8 +8,7 @@ Known issues:
  - Timestamps might be off by a number of leap seconds. Need to find a way to check this.
  - Error messages aren't very helpful. 
 
-If you find `regtools` useful, discover a bug, or have a suggestion for a new feature or change, please open an issue and let me know. (If it's feasible and doesn't require an asinine amount of work, I will probably add a feature if you request it, even if you're the only one that uses this!)
-
+If you find `regtools` useful, or have a suggestion for a new feature or change, please open an issue and let me know. (If it's feasible and doesn't require an asinine amount of work, I will probably add a feature if you request it, even if you're the only one that uses this!)
 
 # regtools
 
@@ -19,9 +18,9 @@ You should be able to compile + run `regtools` on any modern linux platform. It 
 
 ### Requirements 
 
-`regtools` attempts to parse the entirety of a windows registry hive and load it into memory before running queries on it. You'll need at least as much free RAM (probably around 2x as much from rough htop guesstimation) as the size of the file you are loading. You *probably* have more than enough RAM, but don't try to run it on a toaster. 
+`regtools` attempts to parse the entirety of a windows registry hive and load it into memory before running queries on it. You'll need an amount of free RAM equal to (the size of the file you are loading) * 10-20-ish. This will come down with optimization, but you *probably* have more than enough RAM, but don't try to run it on a toaster. 
 
-It scales pretty well with the number of cores you have. On my Ryzen 3900x, it takes about 3 seconds to deserialize a 45mb hive file with all 12 cores, and around 30 with only one core in GHCI. (I don't think GHCI compiles w/ optimizations so it will likely be faster than 30s on your machine if you somehow have a single core processor in 2021.)
+It scales pretty well with the number of cores you have. On my Ryzen 3900x, it takes about 3 seconds to deserialize a 45mb hive file with all 12 cores, and around 30 with only one core in GHCI. 
 
 ### Installation 
 
