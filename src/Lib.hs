@@ -1,95 +1,56 @@
-{-# LANGUAGE TupleSections, RecordWildCards #-}
-module Lib where
+{-# LANGUAGE TupleSections, RecordWildCards, BinaryLiterals #-}
+module Lib ( HiveData, checkVKPointer, valueData , peek, testParseHeader, readHive, testhivepath) where
 
-import Data.Serialize 
-import Data.Serialize.Get
-import Data.Word 
+import Data.Serialize
+    ( bytesRead,
+      getBytes,
+      getWord16le,
+      getWord32be,
+      getWord32le,
+      getWord64le,
+      lookAhead,
+      remaining,
+      runGetPartial,
+      Get,
+      Result(Done, Fail, Partial) ) 
+import Data.Word ( Word16, Word32 ) 
 import qualified Data.ByteString as BS 
-import GHC.TypeLits 
-import Data.Kind 
-import Data.Proxy 
-import System.IO 
+
 import qualified Data.Vector as V 
-import Control.Applicative.Combinators 
-import Types
-import Control.Monad
+import Control.Applicative.Combinators ( some ) 
+
+import Control.Monad ( replicateM )
 import Data.Functor ((<&>))
-import Control.Monad.Trans.Reader
-import Control.Monad.Identity
-import Data.ByteString.Char8
-import Control.Monad.Trans.Class 
-import Debug.Trace 
+import Data.ByteString.Char8 ( ByteString, foldl', pack )
 import qualified Data.Map as M 
-import Control.Concurrent.STM 
-import Control.Monad.Par.IO 
-import Control.Lens 
-import Control.Monad.IO.Class
-import Data.Maybe 
-import Control.Monad.Trans.Maybe 
+import Control.Concurrent.STM ( newTVarIO, readTVarIO ) 
+import Control.Lens ( (^.) ) 
+import qualified Data.Sequence as S
+
+import ParseM
 
 
-type FunSet = (Word32 -> Bool)
+import Types
+import Control.Monad (void)
+import Time
+import Data.Bits 
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
-hoist :: forall a. Maybe a -> RegParser a 
-hoist m =  lift (MaybeT . pure $ m)
+checkVKPointer :: Word32 -> Bool 
+checkVKPointer w = w .&. 0b10000000000000000000000000000000 /= 0b10000000000000000000000000000000 
 
-upon :: Bool -> RegParser a -> RegParser a 
-upon b m = if b then m else mzero 
 
-exclude :: (Word32,Word32) -> (Word32 -> Bool) -> (Word32 -> Bool)
-exclude (start,len) old x = old x && not (x >= start && x <= start + len) 
+                               
 
-type Parser st a = ReaderT st Get a 
+peek :: (Word32 -> Word32) -> Word32 -> IO ()
+peek f x = case sort (x,f x) of {(a,b) -> peekTest b a}
+  where 
+    sort (a,b) = if a > b then (a,b) else (b,a)
 
-type RegParser a = ReaderT (TVar RegEnv) (MaybeT IO) a 
-
-parseReg :: RegParser a -> TVar RegEnv -> IO (Maybe a)
-parseReg m e = runMaybeT $ runReaderT m e    
-
-data RegEnv = RegEnv {_dataOffset :: Word32 
-                     ,_parsed     :: M.Map Word32 (Either String CellContent) 
-                     ,_rawHive    :: BS.ByteString 
-                     ,_unparsed   :: FunSet}
-makeLenses ''RegEnv 
-
-nothing :: forall a. RegParser a 
-nothing = mzero 
-
-dataStart :: MonadIO m => ReaderT (TVar RegEnv) m Word32
-dataStart = ask >>= (liftIO . readTVarIO) >>= pure . view dataOffset 
-
-data Sized ::  Type -> Type where 
-  Sized:: Word32 -> a -> Sized a  
-
-rawLength :: RegParser Int 
-rawLength = ask >>= (liftIO . readTVarIO) >>= \e -> pure $ BS.length (e ^. rawHive) 
-
-getHive :: RegParser BS.ByteString 
-getHive = ask >>= (liftIO . readTVarIO) >>= \e -> pure $ e ^. rawHive 
-
-initEnv :: Word32 -> BS.ByteString -> IO (TVar RegEnv)
-initEnv off bs = newTVarIO $ RegEnv {_dataOffset = off 
-                                    ,_parsed = M.empty 
-                                    ,_rawHive =  bs 
-                                    ,_unparsed = const True}
-
-logError :: Word32 -> String -> RegParser ()
-logError loc err = ask >>= \e -> liftIO . atomically . modifyTVar' e $ 
-  over parsed (M.insert loc (Left err))
-
-excludeM :: (Word32,Word32) -> RegParser ()
-excludeM w = ask >>= \e -> liftIO . atomically . modifyTVar' e $ 
-  over unparsed (exclude w)
-
-updateParsed :: forall a. IsCC a =>  Word32 -> a -> RegParser ()
-updateParsed w c = ask >>= \e -> liftIO . atomically . modifyTVar' e $ 
-  over parsed (M.insert w (Right $ cc @a # c))
-
-lookupParsed :: Word32 -> RegParser (Maybe CellContent)
-lookupParsed w = ask >>= (liftIO . readTVarIO) >>= \e -> pure $ e ^? (parsed . ix w . _Right)
-
+nullPointer :: Num p => p
 nullPointer = 0xFFFFFFFF
 
+maybeNull :: (Eq a, Num a) => a -> Maybe a
 maybeNull x = if x == nullPointer then Nothing else Just x  
 
 okPtr :: Int -> Word32 -> Bool
@@ -101,63 +62,14 @@ w32 = getWord32le
 w16 :: Get Word16 
 w16 = getWord16le 
 
-w32' :: Word32 -> RegParser Word32
-w32' off = runGet w32 <$> dropM off >>= \case 
-  Left err -> logError off err >> excludeM (off,4) >> mzero 
-  Right w  -> pure w 
-
-bytes' :: forall n. KnownNat n => Word32 -> RegParser (Bytes n)
-bytes' off = runGet (bytes @n) <$> dropM off >>= \case 
-  Left err -> logError off err >> excludeM (off,fromIntegral $ natVal (Proxy @n)) >> mzero 
-  Right b  -> pure  b 
-
-peekBytes :: forall n. KnownNat n => Word32 -> RegParser (Bytes n)
-peekBytes off = runGet (lookAhead $ bytes @n) <$> dropM off >>= \case 
-  Left err -> logError off err >> excludeM (off,fromIntegral $ natVal (Proxy @n)) >> mzero
-  Right b  -> pure  b 
-
-withSlice :: Word32 -> Word32 -> Get a -> RegParser a
-withSlice off len f = (runGet f) <$> sliceM off len >>= \case 
-  Left err -> logError off err >> excludeM (off,len) >> mzero 
-  Right a  -> pure a 
-
-  
-parseSlice :: forall a. IsCC a => Word32 -> Word32 -> Get a -> RegParser a
-parseSlice offset len p = do 
-  mItem <- lookupParsed offset 
-  case mItem of 
-    Nothing -> do 
-        slice <- sliceM offset len 
-        case runGet p slice of 
-          Left err -> trace ("slice parse error @" <> show offset <> "," <> show len) $ logError offset err >> excludeM (offset,len) >> hoist Nothing 
-          Right c  -> updateParsed offset (cc @a # c) >> excludeM (offset,len) >> pure c
-    Just item -> hoist $ item ^? cc @a
-
-parseDrop :: forall a. IsCC a => Word32 -> Get (Sized a) -> RegParser a
-parseDrop offset p = do 
-  mItem <- lookupParsed offset 
-  case mItem of 
-    Nothing -> do 
-      dropped <- dropM offset 
-      case runGet p dropped of 
-        Left err -> trace ("drop parse error @" <> show offset <> err) $ logError offset err >> excludeM (offset,offset) >> mzero
-        Right (Sized len c) -> updateParsed offset (cc @a # c) >> excludeM (offset,len) >> pure  c
-    Just item -> hoist $ item ^? cc @a
-
-dropM ::  Word32 -> RegParser BS.ByteString
-dropM offset = do 
-  e <- ask >>= (liftIO . readTVarIO)
-  let o = fromIntegral $ _dataOffset e 
-  let rawhive  = BS.drop o  $ _rawHive e 
-  pure . BS.drop (fromIntegral offset) $ rawhive 
-
-sliceM :: Word32 -> Word32 -> RegParser BS.ByteString 
-sliceM offset len = do 
-  e <- ask >>= (liftIO . readTVarIO)
-  let o = fromIntegral $ _dataOffset e  
-  let rawhive   = BS.drop o $ _rawHive e 
-  pure . BS.take (fromIntegral len) . BS.drop (fromIntegral offset) $ rawhive  
-
+readHive :: FilePath -> IO HiveData 
+readHive fPath = do 
+  bs <- BS.readFile testhivepath 
+  registry bs >>= \case 
+    Left err -> error err 
+    Right (rH,hH,tv) -> do 
+      !e <- readTVarIO tv
+      pure $! HiveData rH hH e 
 
 testhivepath :: FilePath 
 testhivepath = "/home/gsh/Downloads/SeanStuff/hkeyclassesroot"
@@ -165,39 +77,63 @@ testhivepath = "/home/gsh/Downloads/SeanStuff/hkeyclassesroot"
 testParseHeader :: IO ()
 testParseHeader = do 
   bs <-  BS.readFile testhivepath
-  reg <- registry bs 
-  Prelude.writeFile "/home/gsh/testregistry.txt"  $ pretty reg 
+  registry bs >>= \case 
+    Left err -> print "Error" -- err 
+    Right (r,h,tv) -> do 
+      e <- readTVarIO tv 
+      let cells = M.size (e ^. parsed)
+      Prelude.putStrLn $ "Successfully parsed " <> show cells <> " keys"
 
-peekTest :: (Int,Int) ->  IO ()
-peekTest i = do 
+peekTest :: Word32 -> Word32 ->  IO ()
+peekTest w1 w2 = do 
   bs <- BS.readFile testhivepath 
-  res <- peekRange bs i 
-  print res 
-type Offset = Word32 
-
-peekRange :: BS.ByteString -> (Int,Int) ->  IO (Either String BS.ByteString)
-peekRange bs (s,e)  = case runGetPartial registryHeader bs of  
-  Fail err _ -> pure (Left err) 
-  Done hdr rest1 -> do 
-        let o = fromIntegral $ _offset1 hdr 
-        pure . Right . BS.take (e-s) . BS.drop (s) $ (BS.drop o rest1)
-  _ -> error "boom"
-
-registry :: BS.ByteString -> IO (Either String Registry) 
-registry bs = case runGetPartial registryHeader bs of  
-  Fail err _ -> pure (Left err) 
-  Done hdr rest1 -> trace ("offset = " <> show (_offset1 hdr)) $ trace ("beginning of raw: " <> show (BS.take 100 rest1)) $ do 
-      e <- initEnv (_offset1 hdr) rest1
-      parseReg hiveBin e >>= \case 
-        Nothing -> pure . Left $ "error - failed to parse registry"
-        Just bin -> pure . Right $ Registry hdr (V.singleton bin)  
-  _ -> pure . Left $ "Error - runGetPartial returned continuation"
+  peekRange bs w1 w2 >>= \case 
+    Left errs -> print errs 
+    Right bstring -> do 
+      Prelude.putStrLn . format $ bstring 
+ where 
+   format :: BS.ByteString -> String 
+   format bs = snd $ foldl' (\(n,acc) x -> (n+1,acc <> "\n" <> show n <> ": " <> show x <> "\n")) (w1,"") bs 
 
 
 
+peekRange :: BS.ByteString -> Word32 -> Word32 ->  IO (Either ParseErrs BS.ByteString)
+peekRange bs w1 w2 = case initE bs of 
+  Left err -> error "boom"
+  Right (rH,hH,rEnv) -> do 
+    tvar <- newTVarIO rEnv
+    runParseM tvar (between' w1 w2)
+
+registry :: BS.ByteString -> IO (Either String (RegistryHeader,HiveBinHeader,Driver)) 
+registry bs = case initE bs of 
+  Left err -> pure . Left $ err 
+  Right (rH,hH,rEnv) -> do 
+    tvar <- newTVarIO rEnv 
+    ecells <- runParseM tvar (nkRecord $ _offset1 rH) 
+    case ecells of 
+      Left errs                  -> pure . Left . show $ errs 
+      Right (ParseOutput l s nk) -> do  
+        let reg = Registry rH (V.singleton $ HiveBin hH (V.singleton $ HiveCell s $ NK nk))
+        pure . Right $ (rH,hH,tvar)
+
+
+
+initE :: BS.ByteString -> Either String (RegistryHeader, HiveBinHeader, RegEnv) 
+initE bs = case runGetPartial mkChunks' bs of 
+  Fail err bs -> Left err  
+  Partial _   -> Left "partial return"
+  Done (h1,h2) bs' -> Right $ (h1,h2, RegEnv M.empty (BS.drop 4 bs') S.empty (_offset1 h1) (OccupiedSpace $ M.empty)) 
+
+mkChunks' :: Get (RegistryHeader, HiveBinHeader)
+mkChunks' = do 
+  rHdr <- registryHeader 
+  hHdr <- lookAhead hiveBinHeader -- Most of the documentation is ambiguous, but testing confirms that the offsets 
+                                  -- in registry records are offsets from the START OF THE BIN HEADER
+                                  -- ergo this has to be lookAhead. Don't change it.
+  pure (rHdr,hHdr)
 
 registryHeader :: Get RegistryHeader 
-registryHeader = trace "\nregistryHeader\n" $ do -- intentionally not doing applicative style here cuz i'm sure i'll make a mistake i'll never catch  
+registryHeader = do -- intentionally not doing applicative style here cuz i'm sure i'll make a mistake i'll never catch  
   magicNumber   <- bytes @4 
   seqNum1       <- w32
   seqNum2       <- w32
@@ -223,7 +159,7 @@ registryHeader = trace "\nregistryHeader\n" $ do -- intentionally not doing appl
   unknown13     <- bytes @16 
   unknown14     <- bytes @4 
   unknown15     <- bytes @4 
-  pure $ RegistryHeader magicNumber 
+  let rslt = RegistryHeader magicNumber 
                         seqNum1 
                         seqNum2 
                         timeStamp 
@@ -248,25 +184,16 @@ registryHeader = trace "\nregistryHeader\n" $ do -- intentionally not doing appl
                         unknown13
                         unknown14 
                         unknown15 
+  pure rslt 
 
-
-hiveBin ::  RegParser HiveBin 
-hiveBin  = trace "hivebin" $ do
-  raw      <- getHive 
-  case runGet hiveBuilder raw of 
-    Left err -> error "boom"
-    Right hbin -> trace "hbin header ok" $ do 
-      hiveCell 0 >>= \rootCell -> pure $ hbin (V.singleton rootCell)
-  where 
-    hiveBuilder :: Get (V.Vector HiveCell -> HiveBin) 
-    hiveBuilder = do 
-      magicNum       <- bytes @4 
-      offset         <- w32
-      binsize        <- w32
-      unknown        <- bytes @16 
-      nextHiveOffset <- bytes @4
-      pure $ \c -> HiveBin magicNum offset binsize unknown nextHiveOffset c
-
+hiveBinHeader:: Get HiveBinHeader
+hiveBinHeader = do 
+  magicNum       <- bytes @4 
+  offset         <- w32
+  binsize        <- w32
+  unknown        <- bytes @16 
+  nextHiveOffset <- bytes @4
+  pure $ HiveBinHeader magicNum offset binsize unknown nextHiveOffset 
 
 hiveSize :: Get Int 
 hiveSize = lookAhead $ do -- make this shorter once i know it works 
@@ -275,80 +202,56 @@ hiveSize = lookAhead $ do -- make this shorter once i know it works
   binsize         <- bytes @4 
   pure . (* 4096) . fromIntegral . toWord32le $ binsize 
 
-hiveCell :: Word32 -> RegParser HiveCell
-hiveCell offset = trace "hiveCell" $ w32' offset >>= \size ->
-  cellContent (offset+4) >>= \x -> pure $ HiveCell size x  
-
-
-  
-cellContent :: Word32 -> RegParser CellContent
-cellContent offset =  trace "cellContent" $ bytes' @2 offset >>= \(Bytes magicN) ->
-    case unpack magicN of 
-      "sk" ->  SK <$> parseDrop offset skRecord
-      "nk" ->  NK <$> nkRecord offset 
-      "vk" ->  VK <$> vkRecord offset 
-      other -> let subkeylists = ["ri","li","lh","lf"]
-              in if other `Prelude.elem` subkeylists 
-                  then  Subkeylist <$> subkeyList offset  
-                  else trace ("Error: Cell Content Failure at Location " <> show offset <> " Magic Number: " <> unpack magicN) mzero--error $ "cellContent failure\nparsed magic number: " <> unpack magicN  --choice [ Valuelist <$> valueList 
-                        --     , RawDataBlocks <$> rawDataBlocks] -- this is 100% wrong but i can't fix it til i know more about how these things point to each other 
-
-skRecord :: Get (Sized SKRecord) 
-skRecord = trace "skRecord" $ do 
-  magicNum <- bytes @2 
-  unknown  <- bytes @2 
-  offset1  <- bytes @4 
-  offset2  <- bytes @4 
-  refCount <- bytes @4 
+skRecord :: Get SKRecord
+skRecord = do 
+  magicNum    <- bytes @2 
+  unknown     <- bytes @2 
+  offset1     <- bytes @4 
+  offset2     <- bytes @4 
+  refCount    <- bytes @4 
   secDescSize <- bytes @4 
   secDescr    <- getBytes (fromIntegral $ toWord32le secDescSize)
-  let size = 2 + 2 + 4 + 4 + 4 + 4 + toWord32le secDescSize
-  pure . Sized size $ SKRecord magicNum unknown offset1 offset2 refCount secDescSize secDescr 
+  pure $ SKRecord magicNum unknown offset1 offset2 refCount secDescSize secDescr 
 
-nkRecord :: Word32 -> RegParser NKRecord
-nkRecord offset = trace ("nkRecord @" <> show offset) $ parseDrop offset nkBuilder >>= \nkb -> do 
+nkRecord :: Word32 -> ParseM (ParseOutput NKRecord)
+nkRecord offset = do 
+
+    nk@(ParseOutput loc size nkb) <- parseCC offset nkBuilder  
 
     let stableSubkeys   = _stableSubkeys nkb
     let unstableSubkeys = _unstableSubkeys nkb
     let stablePtr       = _stableSubkeyPtr nkb
     let unstablePtr     = _unstableSubkeyPtr nkb
+    let numVals         = _numValues nkb 
+    let vlPtr           = _valueListPtr nkb 
+    let secPtr          = _skPtr nkb 
 
-    len <- rawLength 
 
-    
-    
-    subkeylist1      <- upon (stableSubkeys > 0 && okPtr len stablePtr)
-                        $ trace ("parsing stable subkeylist @" <> show stablePtr) (cell @SubkeyList) (stablePtr - 32 )
+    !stableChldrn  <- continueWith (V.empty :: Vec NKRecord) 
+                      $ parseWhen (stableSubkeys > 0 && stablePtr /= 0 && stablePtr /= (maxBound :: Word32)) 
+                      $ parseCC' stablePtr subkeyList >>= subkeysWithList 
                      
+    !volatileChldrn <- continueWith (V.empty :: Vec NKRecord) 
+                      $ parseWhen (unstableSubkeys > 0 && unstablePtr /= 0 && unstablePtr /= (maxBound :: Word32))  
+                      $ parseCC' unstablePtr subkeyList >>= subkeysWithList 
 
-    --subkeylist2      <- trace "wham" $ upon (unstableSubkeys > 0 && okPtr len unstablePtr)
-    --                    $ trace ("parsing volatile subkeylist @" <> show unstablePtr) (cell @SubkeyList) (unstablePtr)
-                         
+    !values <- continueWith V.empty 
+             $ parseWhen (numVals > 0 && vlPtr /= 0 && vlPtr /= (maxBound :: Word32)) 
+             $ valueList vlPtr numVals >>= valuesWithList 
 
-    valuelist       <- trace "bop" $ upon (_numValues nkb > 0 && okPtr len (_valueListPtr nkb))
-                       $ parseSlice (_valueListPtr nkb) (_numValues nkb) valueList 
+    !skRec  <- continueWith Nothing 
+             $  parseWhen (secPtr /= (maxBound :: Word32) && secPtr /= 0)
+             $  Just 
+            <$> parseCC' secPtr skRecord 
                        
+    pure nk
 
-    subkeys         <- V.concat <$> mapM subkeysWithList  [subkeylist1] -- ,subkeylist2]
-
-    values          <- valuesWithList valuelist 
-
-    let res = nkb {_subkeylistStable = Just subkeylist1
-                  ,_subkeylistVol = Nothing
-                  ,_valueList =  Just valuelist
-                  ,_subkeys =  subkeys
-                  ,_values  =  values}
-
-    updateParsed offset res 
-
-    pure  $ res 
-
- where 
-   nkBuilder :: Get (Sized NKRecord)-- Get (Sized (Maybe SubkeyList -> Maybe SubkeyList -> Maybe ValueList -> V.Vector NKRecord -> V.Vector VKRecord -> NKRecord))
-   nkBuilder = trace "nkBuilder" $ do 
+ where
+   nkBuilder :: Get NKRecord 
+   nkBuilder = do 
       magicNum        <- bytes @2 
       flags           <- bytes @2 
-      timeStamp       <- bytes @8 
+      timeStamp       <- getWord64le 
       unknown1        <- bytes @4
       offset1         <- w32
       stableSubkeys   <- w32
@@ -364,14 +267,14 @@ nkRecord offset = trace ("nkRecord @" <> show offset) $ parseDrop offset nkBuild
       maxValueNm      <- w32
       maxValSize      <- w32
       unknown2        <- bytes @4 
-      keyNameLength   <- w32
-      classNameLength <- w32
+      keyNameLength   <- w16
+      classNameLength <- w16
       keyString       <- getBytes (fromIntegral keyNameLength)
       bRead           <- bytesRead 
-      pure . Sized (fromIntegral bRead) $ NKRecord 
+      pure $ NKRecord 
             magicNum 
             flags 
-            timeStamp 
+            (convertTime timeStamp) 
             unknown1 
             offset1 
             stableSubkeys 
@@ -390,36 +293,38 @@ nkRecord offset = trace ("nkRecord @" <> show offset) $ parseDrop offset nkBuild
             keyNameLength 
             classNameLength
             keyString 
-            Nothing Nothing Nothing V.empty V.empty 
 
-subkeysWithList :: SubkeyList -> RegParser (V.Vector NKRecord)
-subkeysWithList skl = trace ("subkeysWithList: " <> pretty skl) $ V.foldM' go V.empty (_subkeyElems skl) 
+subkeysWithList :: SubkeyList -> ParseM (V.Vector NKRecord )
+subkeysWithList skl = V.foldM' go V.empty (_subkeyElems skl) 
   where 
-    go :: V.Vector NKRecord -> SubkeyElem -> RegParser (V.Vector NKRecord)
+    go :: V.Vector NKRecord -> SubkeyElem -> ParseM (V.Vector NKRecord) 
     go acc ske =  case ske of 
-          Ri off   ->  subkeyList off >>= \ skl -> subkeysWithList skl 
-          Li off   -> getNK acc off 
-          Lh off _ -> getNK acc off 
-          Lf off _ -> getNK acc off 
-    getNK :: V.Vector NKRecord -> Word32 -> RegParser (V.Vector NKRecord )
-    getNK acc off =  nkRecord off >>= \nk -> pure $ acc `V.snoc` nk 
+          Ri off   -> continueWith acc $  do 
+            (ParseOutput _ _ skl) <- parseCC off subkeyList
+            nks <- subkeysWithList skl 
+            pure $ acc <> nks 
+          Li off   -> continueWith acc $ nkRecord off >>= pure . (\x -> V.cons x acc) . unOut  
+          Lh off _ -> continueWith acc $ nkRecord off >>= pure . (\x -> V.cons x acc) . unOut  
+          Lf off _ -> continueWith acc $ nkRecord off >>= pure . (\x -> V.cons x acc) . unOut   
 
-
-valuesWithList :: ValueList -> RegParser (V.Vector VKRecord)
-valuesWithList vl = trace "valuesWithList" $ V.foldM' go V.empty vl 
+valuesWithList :: ValueList -> ParseM (V.Vector VKRecord)
+valuesWithList vl =  do 
+  vks <- V.foldM' go V.empty vl
+  V.foldM'_  getValData () vks    
+  pure vks 
   where 
-    go :: V.Vector VKRecord -> Word32 -> RegParser (V.Vector VKRecord) 
-    go acc off = vkRecord off >>= \vk  -> pure $ acc `V.snoc` vk 
-         
+    getValData :: () -> VKRecord -> ParseM ()
+    getValData acc vk = do 
+      let vLen  = vk ^. dataLength 
+      let vType = vk ^. valueType 
+      let vPtr  = vk ^. dataPtr 
+      continueWith acc . void $! parseWhen (checkVKPointer vLen) $ parseCC vPtr (valueData vLen vType)
 
-vkRecord :: Word32 -> RegParser VKRecord
-vkRecord off = trace "vkRecord" $ parseDrop off vkBuilder >>= \vkb -> 
-    withSlice (_dataPtr vkb) (_dataLength vkb) (value $ _valueType vkb) >>= \v -> 
-      let res = vkb {_value = v}
-      in  updateParsed off res >> pure res 
- where 
-   vkBuilder :: Get (Sized (VKRecord))
-   vkBuilder = do 
+    go :: V.Vector VKRecord -> Word32 -> ParseM (V.Vector VKRecord) 
+    go acc off = continueWith acc $ parseCC off  (vkRecord off) >>= \(ParseOutput _ _ vk)  -> pure $ acc `V.snoc` vk 
+
+vkRecord :: Word32 -> Get VKRecord
+vkRecord off =  do 
       magicNum  <- bytes @2 
       nameLen   <- w16
       dataLen   <- w32
@@ -428,66 +333,67 @@ vkRecord off = trace "vkRecord" $ parseDrop off vkBuilder >>= \vkb ->
       nameFlags <- bytes @2 
       unknown   <- bytes @2 
       valName   <- getBytes (fromIntegral  nameLen)
-      bRead     <- fromIntegral <$> bytesRead 
-      pure . Sized bRead $ VKRecord magicNum nameLen dataLen dataPtr valType nameFlags unknown valName (REG_NONE BS.empty)
+      pure  $ VKRecord magicNum nameLen dataLen dataPtr valType nameFlags unknown valName (REG_NONE BS.empty)
 
-subkeyList :: Offset -> RegParser SubkeyList
-subkeyList off = trace ("subkeylist @" <> show (off)) $ parseDrop (off) skBuilder 
+subkeyList :: Get SubkeyList
+subkeyList = getSKL 
   where 
-    skBuilder :: Get (Sized SubkeyList)
-    skBuilder =  trace "subkeyList" $ do 
-      magicNum     <- elemMagic -- bytes @2 
+    getSKL :: Get SubkeyList 
+    getSKL = do 
+      magicNum     <- bytes @2 
       numElems     <- w16
-      elems        <- trace ("numElems: " <> show numElems) $ if numElems == 0 then pure [] else replicateM (fromIntegral numElems) (subkeyElem magicNum)
-      bRead        <- trace "boop" $ fromIntegral <$> bytesRead 
-      pure . Sized bRead $ SubkeyList magicNum numElems (V.fromList elems) 
+      elems        <- if numElems == 0 && okMagic magicNum then pure [] else replicateM (fromIntegral numElems) (subkeyElem magicNum)
+      bRead        <- fromIntegral <$> bytesRead 
+      pure $ SubkeyList magicNum numElems (V.fromList elems) 
 
-    elemMagic :: Get (Bytes 2) 
-    elemMagic = trace "elemMagic" $ bytes @2 >>= \b@(Bytes bs) -> 
-      let unpacked = unpack bs 
-      in  trace unpacked $ if unpacked `Prelude.elem` ["ri","li","lh","lf"] 
-          then pure b 
-          else fail $ "invalid subkey magic number: " <> unpacked 
+    okMagic :: Bytes 2 -> Bool 
+    okMagic (Bytes bs) =  
+      let    ri = pack "ri"
+             li = pack "li"
+             lh = pack "lh"
+             lf = pack "lf"
+             ok x = x `Prelude.elem` [ri,li,lh,lf]
+      in  ok bs 
 
-    
 subkeyElem :: Bytes 2 -> Get SubkeyElem 
 subkeyElem magicN@(Bytes w) 
    | w == ri = Ri <$> w32
    | w == li = Li <$> w32
    | w == lh = Lh <$> w32 <*> w32
    | w == lf = Lf <$> w32 <*> w32
-   | otherwise = error $ "Invalid subkey magic number: " <> show magicN 
+   | otherwise = fail $ "Invalid subkey magic number: " <> show magicN 
  where 
    ri = pack "ri"
    li = pack "li"
    lh = pack "lh"
    lf = pack "lf"
 
-value :: Word32 -> Get Value 
-value w = case w of 
-  0x0 -> REG_NONE <$> allRemainingBytes 
-  0x1 -> REG_SZ <$> allRemainingBytes 
-  0x2 -> REG_EXPAND_SZ <$> allRemainingBytes
-  0x3 -> REG_BINARY <$> allRemainingBytes
-  0x4 -> REG_DWORD <$> w32
-  0x5 -> REG_DWORD_BIG_ENDIAN <$> getWord32be
-  0x6 -> REG_LINK <$> allRemainingBytes
-  0x7 -> REG_MULTI_SZ <$> allRemainingBytes
-  0x8 -> REG_RESOURCE_LIST <$> allRemainingBytes
-  0x9 -> REG_FULL_RESOURCE_DESCRIPTOR <$> allRemainingBytes 
-  0xA -> REG_RESOURCE_REQUIREMENTS_LIST <$> allRemainingBytes
-  0xB -> REG_QWORD <$> getWord64le
-  other -> fail $ show other <> " is not a valid value identifier"
+valueData :: Word32 -> Word32 -> Get Value 
+valueData len w 
+  = let rest = getBytes (fromIntegral len) 
+    in case w of 
+        0x0 -> REG_NONE <$> rest 
+        0x1 -> REG_SZ <$> rest
+        0x2 -> REG_EXPAND_SZ <$> rest
+        0x3 -> REG_BINARY <$> rest
+        0x4 -> REG_DWORD <$> w32
+        0x5 -> REG_DWORD_BIG_ENDIAN <$> getWord32be
+        0x6 -> REG_LINK <$> rest
+        0x7 -> REG_MULTI_SZ <$> rest
+        0x8 -> REG_RESOURCE_LIST <$> rest
+        0x9 -> REG_FULL_RESOURCE_DESCRIPTOR <$> rest
+        0xA -> REG_RESOURCE_REQUIREMENTS_LIST <$> rest
+        0xB -> REG_QWORD <$> getWord64le
+        other -> fail $ show other <> " is not a valid value identifier"
 
-
-cell :: forall c. IsCC c => Offset -> RegParser  c
-cell o = trace ("cell: " <> show o ) $ hiveCell o >>= \(HiveCell s c)  -> hoist $  c ^? cc @c  
-
-
-valueList :: Get ValueList 
-valueList = V.fromList <$> some w32
+valueList :: Word32 -> Word32 -> ParseM ValueList
+valueList start len = parseCC' start (getVL len) 
+ where 
+  getVL :: Word32 -> Get ValueList 
+  getVL len = V.fromList <$> replicateM (fromIntegral len) w32
 
 rawDataBlocks :: Get BS.ByteString 
 rawDataBlocks = allRemainingBytes -- hopefully it works out like this
 
+allRemainingBytes :: Get ByteString
 allRemainingBytes = remaining >>= getBytes
