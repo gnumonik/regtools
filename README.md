@@ -13,7 +13,7 @@ If you find `regtools` useful, discover a bug, or have a suggestion for a new fe
 
 # regtools
 
-`regtools` is a command-line utility + tiny, simple scripting language (written in Haskell) for exploring Windows registry hive bins (binary) files. Its features include an interactive shell for live exploration of registry keys and values, a plugin system to facilitate sharing and rerunning queries, the ability to output the results of queries (or the entire registry, if you really hate having free disk space) to JSON, and a tool for hashing select registry keys. 
+`regtools` is a command-line utility + tiny, simple scripting language (written in Haskell) for forensic exploration of Windows registry hive bins (binary) files. Its features include an interactive shell for live exploration of registry keys and values, a plugin system to facilitate sharing and rerunning queries, the ability to output the results of queries (or the entire registry, if you really hate having free disk space) to JSON, and a tool for hashing select registry keys. 
 
 You should be able to compile + run `regtools` on any modern linux platform. It *may* compile on Windows (there are no platform-specific libraries) but is not actively targeted at Windows at this time.
 
@@ -104,7 +104,7 @@ e) Same thing as C. Remember: Performs a substring search on all keys in a list 
 
 (See the reference at the end of this file for an explanation of all of the commands.)
 
-### Commands & Variable Assignment 
+## Commands & Variable Assignment 
 
 If you run the example query in the previous section, you will notice that it does not produce any output to the terminal. This is intentional! Some queries may return a very large number of results, and it would take far longer to print them to the terminal than it takes the computer to calculate them. 
 
@@ -137,6 +137,10 @@ But that's kind of ugly and the parentheses make it hard to read, so, alternativ
 | Subkeys: <TRUNCATED>
 |------]
 ```
+
+Two things to note here:
+
+First, *a variable can only be assigned ****once**** in a single shell session or script file. If you know an imperative programming language, you can think of `regtools` variables as constants. (They're really immutable variables, a la Haskell/Rust or Scala's 'val's, but the difference doesn't really matter here.)
 
 One thing to note here is that the `regtools` scripting language is **strongly/statically typed**. If you don't know what the means (or are scared of types), don't worry! There are *only **5*** types: 
 
