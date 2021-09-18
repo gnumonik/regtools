@@ -1,0 +1,56 @@
+PLUGIN {
+  printStr "Test #1 - Basic Query (subkeys, select, keyNameHas)"
+  let someKeys = query root (subkeys | select (keyNameHas "mhtml"))
+
+  printStr "Test #2 - `print`"  
+  print someKeys 
+
+  printStr "Test #3 - `writeJSON`" 
+  writeJSON someKeys "C:\\Users\\Sean\\Documents\\tests\\testJSON"
+
+  printStr "Test #4 - `writeHash`" 
+  writeHash someKeys "C:\\Users\\Sean\\Documents\\tests\\testHASH"
+
+  printStr "Test #5 - `checkHash`" 
+  checkHash "C:\\Users\\Sean\\Documents\\tests\\testHASH"
+
+  printStr "Test #6 - `showType`" 
+  showType someKeys 
+
+  printStr "Test #7 - `key` (no <$ROOT$>)"
+  print query root (key ".mhtml")
+
+  printStr "Test #8 - `key` (just <$ROOT$>)"
+  print query root (key "<$ROOT$>")
+
+  printStr "Test #8 - `key` (with <$ROOT$>)"
+  let atMostOneKey = query root (key "<$ROOT$>\.mhtml")
+  print atMostOneKey
+
+  printStr "Test #9 - `values`, `valNameHas`, `concatMap`" 
+  print query root (subkeys | concatMap (values) | select (valNameHas "backup") )
+
+  printStr "Test #10 - `valDataHas`" 
+  print query root (subkeys | concatMap (values) | select (valDataHas "audio") )
+
+  printStr "Test #12 - `expand`, var queries, line-break insensitivity, `map`" 
+  print (
+    query atMostOneKey (map (expand))
+  )
+
+  printStr "Test #13 - `append`" 
+  let hasMHTML = query root (subkeys | select (keyNameHas "mhtml"))
+  let hasPHTML = query root (subkeys | select (keyNameHas "phtml"))
+  print (append hasMHTML hasPHTML)
+
+  printStr "Test #14 - `concat`"
+  let toConcat = query atMostOneKey (map (subkeys))
+  print (concat toConcat)
+
+  printStr "Test #15 - `isEmpty`, if-then" 
+  if isEmpty toConcat 
+    then printStr "Empty toConcat" 
+    else printStr "Non-empty toConcat" 
+
+  printStr "All tests succeeded"
+}

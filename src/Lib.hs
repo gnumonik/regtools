@@ -1,5 +1,5 @@
 {-# LANGUAGE TupleSections, RecordWildCards, BinaryLiterals #-}
-module Lib ( HiveData, checkVKPointer, valueData , peek, testParseHeader, readHive, testhivepath) where
+module Lib ( HiveData, checkVKPointer, valueData , readHive) where
 
 import Data.Serialize
     ( bytesRead,
@@ -15,10 +15,8 @@ import Data.Serialize
       Result(Done, Fail, Partial) ) 
 import Data.Word ( Word16, Word32 ) 
 import qualified Data.ByteString as BS 
-
 import qualified Data.Vector as V 
 import Control.Applicative.Combinators ( some ) 
-
 import Control.Monad ( replicateM )
 import Data.Functor ((<&>))
 import Data.ByteString.Char8 ( ByteString, foldl', pack )
@@ -39,14 +37,6 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 checkVKPointer :: Word32 -> Bool 
 checkVKPointer w = w .&. 0b10000000000000000000000000000000 /= 0b10000000000000000000000000000000 
 
-
-                               
-
-peek :: (Word32 -> Word32) -> Word32 -> IO ()
-peek f x = case sort (x,f x) of {(a,b) -> peekTest b a}
-  where 
-    sort (a,b) = if a > b then (a,b) else (b,a)
-
 nullPointer :: Num p => p
 nullPointer = 0xFFFFFFFF
 
@@ -64,38 +54,12 @@ w16 = getWord16le
 
 readHive :: FilePath -> IO HiveData 
 readHive fPath = do 
-  bs <- BS.readFile testhivepath 
+  bs <- BS.readFile fPath
   registry bs >>= \case 
     Left err -> error err 
     Right (rH,hH,tv) -> do 
       !e <- readTVarIO tv
       pure $! HiveData rH hH e 
-
-testhivepath :: FilePath 
-testhivepath = "/home/gsh/Downloads/SeanStuff/hkeyclassesroot"
-
-testParseHeader :: IO ()
-testParseHeader = do 
-  bs <-  BS.readFile testhivepath
-  registry bs >>= \case 
-    Left err -> print "Error" -- err 
-    Right (r,h,tv) -> do 
-      e <- readTVarIO tv 
-      let cells = M.size (e ^. parsed)
-      Prelude.putStrLn $ "Successfully parsed " <> show cells <> " keys"
-
-peekTest :: Word32 -> Word32 ->  IO ()
-peekTest w1 w2 = do 
-  bs <- BS.readFile testhivepath 
-  peekRange bs w1 w2 >>= \case 
-    Left errs -> print errs 
-    Right bstring -> do 
-      Prelude.putStrLn . format $ bstring 
- where 
-   format :: BS.ByteString -> String 
-   format bs = snd $ foldl' (\(n,acc) x -> (n+1,acc <> "\n" <> show n <> ": " <> show x <> "\n")) (w1,"") bs 
-
-
 
 peekRange :: BS.ByteString -> Word32 -> Word32 ->  IO (Either ParseErrs BS.ByteString)
 peekRange bs w1 w2 = case initE bs of 

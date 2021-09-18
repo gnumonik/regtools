@@ -1,7 +1,6 @@
 module Main where
 
 import Explore.Repl ( initRepl, checkKeyHash_ )
-import Lib (testhivepath)
 import Explore.Plugins ( runPlugin_ ) 
 import Explore.CmdOpts
     ( getOpts,
@@ -10,7 +9,7 @@ import Explore.CmdOpts
 
 
 main :: IO ()
-main = do --initRepl testhivepath
+main = do 
   Options hivePath mOpts <- getOpts
   case mOpts of 
     PLUGIN pluginPath  ->
